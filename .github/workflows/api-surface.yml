@@ -1,0 +1,38 @@
+name: API surface coverage
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  api-surface:
+    name: API surface coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install project dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Claude Agent SDK
+        run: bun add --no-save @anthropic-ai/claude-agent-sdk@0.2.92
+
+      - name: Check API surface coverage
+        env:
+          API_SURFACE_PACKAGE: "@anthropic-ai/claude-agent-sdk"
+          API_SURFACE_VERSION: "0.2.92"
+          API_SURFACE_BADGE_LABEL: "API Surface Coverage"
+          API_SURFACE_BADGE_PATH: "api-surface-badge.json"
+          API_SURFACE_GIST_ID: ${{ secrets.API_SURFACE_GIST_ID }}
+          API_SURFACE_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+        run: bun run api-surface:check
