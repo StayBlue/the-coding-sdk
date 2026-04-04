@@ -33,7 +33,9 @@ const LOCAL_DECL_FILES = (process.env.API_SURFACE_LOCAL_DECLS ?? "sdk.d.ts,sdk-t
   .filter(Boolean);
 const REFERENCE_PACKAGE = process.env.API_SURFACE_PACKAGE ?? "@anthropic-ai/claude-agent-sdk";
 const REFERENCE_VERSION = process.env.API_SURFACE_VERSION ?? "0.2.92";
-const REFERENCE_DECL_FILES = (process.env.API_SURFACE_REFERENCE_DECLS ?? "sdk.d.ts,dist/sdk.d.ts,agentSdkTypes.d.ts")
+const REFERENCE_DECL_FILES = (
+  process.env.API_SURFACE_REFERENCE_DECLS ?? "sdk.d.ts,dist/sdk.d.ts,agentSdkTypes.d.ts"
+)
   .split(",")
   .map((file) => file.trim())
   .filter(Boolean);
@@ -51,7 +53,13 @@ function badgeColor(coverage) {
 }
 
 function collectExportedNames(sourceText) {
-  const sourceFile = ts.createSourceFile("surface.d.ts", sourceText, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  const sourceFile = ts.createSourceFile(
+    "surface.d.ts",
+    sourceText,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TS,
+  );
   const names = new Set();
 
   const addBindingName = (nameNode) => {
@@ -205,7 +213,9 @@ async function updateGist(coverage) {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Failed to update gist ${GIST_ID}: ${response.status} ${response.statusText} ${body}`);
+    throw new Error(
+      `Failed to update gist ${GIST_ID}: ${response.status} ${response.statusText} ${body}`,
+    );
   }
 
   const result = await response.json();
@@ -225,13 +235,9 @@ function checkTypeCompatibility(localFiles, referenceFile, symbolNames) {
     ...symbolNames.map(
       (n) => `declare const __local_${n}: typeof import("./local_surface").local_${n};`,
     ),
-    ...symbolNames.map(
-      (n) => `declare const __ref_${n}: typeof import("./ref_surface").ref_${n};`,
-    ),
+    ...symbolNames.map((n) => `declare const __ref_${n}: typeof import("./ref_surface").ref_${n};`),
     // Test: local assignable to reference (local satisfies the reference contract)
-    ...symbolNames.map(
-      (n) => `const __check_${n}: typeof __ref_${n} = __local_${n};`,
-    ),
+    ...symbolNames.map((n) => `const __check_${n}: typeof __ref_${n} = __local_${n};`),
   ].join("\n");
 
   const localSurfaceSource = localFiles
@@ -346,11 +352,7 @@ async function main() {
   const extra = [...localSet].filter((name) => !referenceSet.has(name)).sort();
   const matched = [...referenceSet].filter((name) => localSet.has(name)).sort();
 
-  const mismatches = checkTypeCompatibility(
-    LOCAL_DECL_FILES,
-    referenceDeclPath,
-    matched,
-  );
+  const mismatches = checkTypeCompatibility(LOCAL_DECL_FILES, referenceDeclPath, matched);
 
   const compatible = matched.length - mismatches.length;
   const implemented = compatible;

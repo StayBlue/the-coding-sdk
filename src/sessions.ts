@@ -279,10 +279,7 @@ export async function forkSession(
 
   const existingInfo = readSessionInfo(located.filePath, sessionId);
   const baseTitle =
-    options.title?.trim() ||
-    existingInfo?.customTitle ||
-    existingInfo?.summary ||
-    "Forked session";
+    options.title?.trim() || existingInfo?.customTitle || existingInfo?.summary || "Forked session";
 
   lines.push(
     JSON.stringify({
@@ -647,9 +644,7 @@ function findProjectDir(projectPath: string): string | undefined {
     return undefined;
   }
 
-  const match = entries.find(
-    (entry) => entry.isDirectory() && entry.name.startsWith(`${prefix}-`),
-  );
+  const match = entries.find((entry) => entry.isDirectory() && entry.name.startsWith(`${prefix}-`));
   return match ? join(projectsDir, match.name) : undefined;
 }
 

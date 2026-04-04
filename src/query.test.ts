@@ -409,8 +409,9 @@ test("query controller sendControlRequest times out on unresponsive CLI", async 
   });
 
   // Use a very short timeout to make the test fast
-  const initializePromise = (controller as unknown as { initialize(): Promise<unknown> })
-    .initialize();
+  const initializePromise = (
+    controller as unknown as { initialize(): Promise<unknown> }
+  ).initialize();
 
   await initPromise;
 

@@ -695,10 +695,7 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   mcpServerStatus(): Promise<McpServerStatus[]>;
   getContextUsage(): Promise<SDKControlGetContextUsageResponse>;
   accountInfo(): Promise<AccountInfo>;
-  rewindFiles(
-    userMessageId: string,
-    options?: RewindFilesOptions,
-  ): Promise<RewindFilesResult>;
+  rewindFiles(userMessageId: string, options?: RewindFilesOptions): Promise<RewindFilesResult>;
   reconnectMcpServer(serverName: string): Promise<void>;
   toggleMcpServer(serverName: string, enabled: boolean): Promise<void>;
   streamInput(stream: AsyncIterable<SDKUserMessage>): Promise<void>;

@@ -263,7 +263,9 @@ function zodArrayElement(schema: z.ZodTypeAny): z.ZodTypeAny | undefined {
 
 function zodEnumValues(schema: z.ZodTypeAny): readonly string[] {
   return (
-    ((schema as ZodAny & { options?: readonly string[] }).options as readonly string[] | undefined) ??
+    ((schema as ZodAny & { options?: readonly string[] }).options as
+      | readonly string[]
+      | undefined) ??
     ((schema as ZodAny)._def?.values as readonly string[] | undefined) ??
     []
   );
