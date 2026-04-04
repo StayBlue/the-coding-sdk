@@ -34,5 +34,5 @@ jobs:
           API_SURFACE_BADGE_LABEL: "API Surface Coverage"
           API_SURFACE_BADGE_PATH: "api-surface-badge.json"
           API_SURFACE_GIST_ID: ${{ secrets.API_SURFACE_GIST_ID }}
-          API_SURFACE_GIST_TOKEN: ${{ secrets.GH_GIST_TOKEN }}
+          API_SURFACE_GIST_TOKEN: ${{ secrets.API_SURFACE_GIST_TOKEN }}
         run: bun run api-surface:check

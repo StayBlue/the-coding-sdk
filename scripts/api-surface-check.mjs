@@ -40,7 +40,7 @@ const REFERENCE_DECL_FILES = (process.env.API_SURFACE_REFERENCE_DECLS ?? "sdk.d.
 const BADGE_PATH = process.env.API_SURFACE_BADGE_PATH;
 const BADGE_LABEL = process.env.API_SURFACE_BADGE_LABEL ?? "api surface";
 const GIST_ID = process.env.API_SURFACE_GIST_ID;
-const GIST_TOKEN = process.env.API_SURFACE_GIST_TOKEN ?? process.env.GH_GIST_TOKEN;
+const GIST_TOKEN = process.env.API_SURFACE_GIST_TOKEN;
 const GIST_FILE_NAME = process.env.API_SURFACE_GIST_FILE_NAME ?? "api-surface-badge.json";
 
 function badgeColor(coverage) {
@@ -171,7 +171,7 @@ async function writeBadgeFile(coverage) {
 async function updateGist(coverage) {
   if (!GIST_ID) return;
   if (!GIST_TOKEN) {
-    console.log("Skipping gist update: missing API_SURFACE_GIST_TOKEN/GH_GIST_TOKEN environment variable.");
+    console.log("Skipping gist update: missing API_SURFACE_GIST_TOKEN environment variable.");
     return;
   }
 
