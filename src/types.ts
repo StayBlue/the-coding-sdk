@@ -10,6 +10,7 @@
 
 import type {
   CallToolResult,
+  ElicitResult,
   JSONRPCMessage,
   ToolAnnotations,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -111,6 +112,34 @@ export type SDKDeferredToolUse = {
 export type McpServerStatusConfig =
   | McpServerConfigForProcessTransport
   | McpClaudeAIProxyServerConfig;
+
+export type ElicitationRequest = {
+  serverName: string;
+  message: string;
+  mode?: "form" | "url";
+  url?: string;
+  elicitationId?: string;
+  requestedSchema?: Record<string, unknown>;
+};
+
+export type ElicitationResult = ElicitResult;
+
+export type OnElicitation = (
+  request: ElicitationRequest,
+  options: { signal: AbortSignal },
+) => Promise<ElicitationResult>;
+
+export type SDKControlReloadPluginsResponse = {
+  commands: SlashCommand[];
+  agents: AgentInfo[];
+  plugins: Array<{
+    name: string;
+    path: string;
+    source?: string;
+  }>;
+  mcpServers: McpServerStatus[];
+  error_count: number;
+};
 
 export type AnyZodRawShape = ZodRawShape;
 
@@ -786,6 +815,7 @@ export type Options = {
   forkSession?: boolean;
   betas?: SdkBeta[];
   hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
+  onElicitation?: OnElicitation;
   persistSession?: boolean;
   includeHookEvents?: boolean;
   includePartialMessages?: boolean;
@@ -900,6 +930,15 @@ export type SDKUserMessageReplay = SDKBaseMessage & {
   session_id: string;
   isReplay: true;
   file_attachments?: unknown[];
+};
+
+export type SDKAuthStatusMessage = {
+  type: "auth_status";
+  isAuthenticating: boolean;
+  output: string[];
+  error?: string;
+  uuid: UUID;
+  session_id: string;
 };
 
 export type SDKResultSuccess = {
@@ -1121,6 +1160,7 @@ export type SDKMessage =
   | SDKTaskStartedMessage
   | SDKTaskProgressMessage
   | SDKSessionStateChangedMessage
+  | SDKAuthStatusMessage
   | SDKFilesPersistedEvent
   | SDKElicitationCompleteMessage;
 
@@ -1314,6 +1354,7 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   rewindFiles(userMessageId: string, options?: RewindFilesOptions): Promise<RewindFilesResult>;
   reconnectMcpServer(serverName: string): Promise<void>;
   toggleMcpServer(serverName: string, enabled: boolean): Promise<void>;
+  reloadPlugins(): Promise<SDKControlReloadPluginsResponse>;
   streamInput(stream: AsyncIterable<SDKUserMessage>): Promise<void>;
   stopTask(taskId: string): Promise<void>;
   close(): void;
@@ -1391,6 +1432,18 @@ export type SDKControlRequestInner =
     }
   | {
       subtype: "get_context_usage";
+    }
+  | {
+      subtype: "elicitation";
+      mcp_server_name: string;
+      message: string;
+      mode?: "form" | "url";
+      url?: string;
+      elicitation_id?: string;
+      requested_schema?: Record<string, unknown>;
+    }
+  | {
+      subtype: "reload_plugins";
     };
 
 export type SDKControlRequest = {

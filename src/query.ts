@@ -16,6 +16,7 @@ import { SubprocessCLITransport } from "./subprocess-transport.ts";
 import type {
   AccountInfo,
   AgentInfo,
+  ElicitationRequest,
   HookCallback,
   HookCallbackMatcher,
   HookEvent,
@@ -29,6 +30,7 @@ import type {
   RewindFilesResult,
   SDKControlGetContextUsageResponse,
   SDKControlInitializeResponse,
+  SDKControlReloadPluginsResponse,
   SDKControlRequest,
   SDKControlRequestInner,
   SDKControlResponse,
@@ -164,6 +166,13 @@ export class QueryController implements Query {
     return (await this.#sendControlRequest({
       subtype: "get_context_usage",
     })) as unknown as SDKControlGetContextUsageResponse;
+  }
+
+  async reloadPlugins(): Promise<SDKControlReloadPluginsResponse> {
+    await this.#ready();
+    return (await this.#sendControlRequest({
+      subtype: "reload_plugins",
+    })) as unknown as SDKControlReloadPluginsResponse;
   }
 
   async accountInfo(): Promise<AccountInfo> {
@@ -517,6 +526,24 @@ export class QueryController implements Query {
           mcp_response: await dispatchSdkMcpRequest(server.instance, request.message),
         };
       }
+      case "elicitation": {
+        const elicitationRequest: ElicitationRequest = {
+          serverName: request.mcp_server_name,
+          message: request.message,
+          ...(request.mode ? { mode: request.mode } : {}),
+          ...(request.url ? { url: request.url } : {}),
+          ...(request.elicitation_id ? { elicitationId: request.elicitation_id } : {}),
+          ...(request.requested_schema ? { requestedSchema: request.requested_schema } : {}),
+        };
+
+        if (this.#options.onElicitation) {
+          return (await this.#options.onElicitation(elicitationRequest, {
+            signal,
+          })) as unknown as Record<string, unknown>;
+        }
+
+        return { action: "decline" };
+      }
       default:
         throw new CLIConnectionError(`Unsupported control request subtype: ${request.subtype}`);
     }
@@ -625,6 +652,7 @@ function isSdkMessage(message: StdoutMessage): message is SDKMessage {
     case "system":
     case "stream_event":
     case "rate_limit_event":
+    case "auth_status":
     case "tool_progress":
     case "tool_use_summary":
     case "prompt_suggestion":
