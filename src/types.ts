@@ -129,6 +129,29 @@ export type OnElicitation = (
   options: { signal: AbortSignal },
 ) => Promise<ElicitationResult>;
 
+export type McpSetServersResult = {
+  added: string[];
+  removed: string[];
+  errors: Record<string, string>;
+};
+
+export type PromptRequest = {
+  prompt: string;
+  message: string;
+  options: PromptRequestOption[];
+};
+
+export type PromptRequestOption = {
+  key: string;
+  label: string;
+  description?: string;
+};
+
+export type PromptResponse = {
+  prompt_response: string;
+  selected: string;
+};
+
 export type SDKControlReloadPluginsResponse = {
   commands: SlashCommand[];
   agents: AgentInfo[];
@@ -1354,6 +1377,7 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   rewindFiles(userMessageId: string, options?: RewindFilesOptions): Promise<RewindFilesResult>;
   reconnectMcpServer(serverName: string): Promise<void>;
   toggleMcpServer(serverName: string, enabled: boolean): Promise<void>;
+  setMcpServers(servers: Record<string, McpServerConfig>): Promise<McpSetServersResult>;
   reloadPlugins(): Promise<SDKControlReloadPluginsResponse>;
   streamInput(stream: AsyncIterable<SDKUserMessage>): Promise<void>;
   stopTask(taskId: string): Promise<void>;
@@ -1441,6 +1465,10 @@ export type SDKControlRequestInner =
       url?: string;
       elicitation_id?: string;
       requested_schema?: Record<string, unknown>;
+    }
+  | {
+      subtype: "mcp_set_servers";
+      servers: Record<string, McpServerConfigForProcessTransport>;
     }
   | {
       subtype: "reload_plugins";

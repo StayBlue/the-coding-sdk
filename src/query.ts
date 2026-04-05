@@ -9,8 +9,10 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { AsyncQueue } from "./async-queue.ts";
 import { AbortError, CLIConnectionError } from "./errors.ts";
+import { McpBridgeTransport } from "./mcp-bridge-transport.ts";
 import { dispatchSdkMcpRequest } from "./sdk-tools.ts";
 import { SubprocessCLITransport } from "./subprocess-transport.ts";
 import type {
@@ -20,7 +22,9 @@ import type {
   HookCallback,
   HookCallbackMatcher,
   HookEvent,
+  McpServerConfig,
   McpServerStatus,
+  McpSetServersResult,
   ModelInfo,
   Options,
   PermissionMode,
@@ -70,6 +74,8 @@ export class QueryController implements Query {
   #inflightControlRequests = new Map<string, AbortController>();
   #initializationResponse?: SDKControlInitializeResponse;
   #sdkMcpServers = new Map<string, NonNullable<Options["mcpServers"]>[string] & { type: "sdk" }>();
+  #sdkMcpBridges = new Map<string, McpBridgeTransport>();
+  #pendingMcpResponses = new Map<string, { resolve: (msg: JSONRPCMessage) => void }>();
 
   constructor({ transport, options }: QueryControllerOptions) {
     this.#transport = transport;
@@ -85,6 +91,8 @@ export class QueryController implements Query {
   }
 
   async initialize(): Promise<SDKControlInitializeResponse> {
+    await this.#connectSdkMcpBridges();
+
     const hooks = this.#convertHooks();
     const systemPrompt =
       typeof this.#options.systemPrompt === "string" ? this.#options.systemPrompt : undefined;
@@ -166,6 +174,62 @@ export class QueryController implements Query {
     return (await this.#sendControlRequest({
       subtype: "get_context_usage",
     })) as unknown as SDKControlGetContextUsageResponse;
+  }
+
+  async setMcpServers(servers: Record<string, McpServerConfig>): Promise<McpSetServersResult> {
+    await this.#ready();
+
+    const sdkServers = new Map<
+      string,
+      NonNullable<Options["mcpServers"]>[string] & { type: "sdk" }
+    >();
+    const processServers: Record<string, McpServerConfig> = {};
+
+    for (const [name, server] of Object.entries(servers)) {
+      if (server.type === "sdk") {
+        sdkServers.set(
+          name,
+          server as NonNullable<Options["mcpServers"]>[string] & { type: "sdk" },
+        );
+      } else {
+        processServers[name] = server;
+      }
+    }
+
+    const oldNames = new Set(this.#sdkMcpServers.keys());
+    for (const name of oldNames) {
+      if (!sdkServers.has(name)) {
+        await this.#disconnectSdkMcpServer(name);
+      }
+    }
+
+    for (const [name, server] of sdkServers) {
+      if (oldNames.has(name)) {
+        await this.#disconnectSdkMcpServer(name);
+      }
+      this.#sdkMcpServers.set(name, server);
+      const instance = server.instance as unknown as Record<string, unknown>;
+      if (typeof instance.connect === "function") {
+        try {
+          await this.#connectSdkMcpServer(
+            name,
+            instance as { connect(transport: McpBridgeTransport): Promise<void> },
+          );
+        } catch {
+          sdkServers.delete(name);
+        }
+      }
+    }
+
+    const sdkStubs: Record<string, { type: "sdk"; name: string }> = {};
+    for (const name of sdkServers.keys()) {
+      sdkStubs[name] = { type: "sdk", name };
+    }
+
+    return (await this.#sendControlRequest({
+      subtype: "mcp_set_servers",
+      servers: { ...processServers, ...sdkStubs } as Record<string, McpServerConfig>,
+    })) as unknown as McpSetServersResult;
   }
 
   async reloadPlugins(): Promise<SDKControlReloadPluginsResponse> {
@@ -252,6 +316,23 @@ export class QueryController implements Query {
       }
     }
     this.#pendingControls.clear();
+
+    const closeError =
+      error instanceof Error
+        ? error
+        : new CLIConnectionError(typeof error === "string" ? error : "Query closed");
+    for (const { resolve } of this.#pendingMcpResponses.values()) {
+      resolve({
+        jsonrpc: "2.0",
+        error: { code: -32600, message: closeError.message },
+      } as unknown as JSONRPCMessage);
+    }
+    this.#pendingMcpResponses.clear();
+
+    for (const bridge of this.#sdkMcpBridges.values()) {
+      void bridge.close();
+    }
+    this.#sdkMcpBridges.clear();
 
     if (error !== undefined) {
       this.#queue.fail(error);
@@ -518,6 +599,65 @@ export class QueryController implements Query {
         >;
       }
       case "mcp_message": {
+        const bridge = this.#sdkMcpBridges.get(request.server_name);
+        if (bridge) {
+          let msg = request.message as JSONRPCMessage;
+
+          if (
+            "method" in msg &&
+            msg.method === "initialize" &&
+            "params" in msg &&
+            msg.params &&
+            typeof msg.params === "object"
+          ) {
+            const params = msg.params as Record<string, unknown>;
+            const caps = (params.capabilities ?? {}) as Record<string, unknown>;
+            if (!caps.elicitation) {
+              msg = {
+                ...msg,
+                params: {
+                  ...params,
+                  capabilities: { ...caps, elicitation: {} },
+                },
+              } as JSONRPCMessage;
+            }
+          }
+
+          if (("result" in msg || "error" in msg) && "id" in msg && msg.id != null) {
+            const key = `${request.server_name}:${msg.id}`;
+            const pending = this.#pendingMcpResponses.get(key);
+            if (pending) {
+              pending.resolve(msg);
+              this.#pendingMcpResponses.delete(key);
+              return {};
+            }
+          }
+
+          if ("method" in msg && "id" in msg && msg.id != null) {
+            const key = `${request.server_name}:${msg.id}`;
+            let timer: Timer | number;
+            const responsePromise = new Promise<JSONRPCMessage>((resolve, reject) => {
+              this.#pendingMcpResponses.set(key, {
+                resolve: (value) => {
+                  clearTimeout(timer as number);
+                  resolve(value);
+                },
+              });
+              timer = setTimeout(() => {
+                if (this.#pendingMcpResponses.delete(key)) {
+                  reject(new CLIConnectionError("MCP response timeout"));
+                }
+              }, 30_000);
+            });
+            bridge.handleInbound(msg);
+            const response = await responsePromise;
+            return { mcp_response: response };
+          }
+
+          bridge.handleInbound(msg);
+          return {};
+        }
+
         const server = this.#sdkMcpServers.get(request.server_name);
         if (!server) {
           throw new CLIConnectionError(`Unknown SDK MCP server: ${request.server_name}`);
@@ -575,6 +715,7 @@ export class QueryController implements Query {
 
   #seedSdkMcpServers(servers: Options["mcpServers"]): void {
     this.#sdkMcpServers.clear();
+    this.#sdkMcpBridges.clear();
     if (!servers) {
       return;
     }
@@ -584,6 +725,98 @@ export class QueryController implements Query {
         this.#sdkMcpServers.set(name, server);
       }
     }
+  }
+
+  async #connectSdkMcpBridges(): Promise<void> {
+    for (const [name, server] of this.#sdkMcpServers) {
+      const instance = server.instance as unknown as Record<string, unknown>;
+      if (typeof instance.connect === "function") {
+        try {
+          await this.#connectSdkMcpServer(
+            name,
+            instance as { connect(transport: McpBridgeTransport): Promise<void> },
+          );
+        } catch {
+          this.#sdkMcpServers.delete(name);
+        }
+      }
+    }
+  }
+
+  async #connectSdkMcpServer(
+    name: string,
+    mcpServer: { connect(transport: McpBridgeTransport): Promise<void> },
+  ): Promise<void> {
+    const bridge = new McpBridgeTransport(
+      (message: JSONRPCMessage) => {
+        this.#sendMcpServerMessageToCli(name, message);
+      },
+      this.#options.onElicitation
+        ? async (params) => {
+            const request = {
+              serverName: name,
+              message: String(params.message ?? ""),
+              ...(params.mode ? { mode: params.mode as "form" | "url" } : {}),
+              ...(params.url ? { url: String(params.url) } : {}),
+              ...(params.elicitationId ? { elicitationId: String(params.elicitationId) } : {}),
+              ...(params.requestedSchema
+                ? { requestedSchema: params.requestedSchema as Record<string, unknown> }
+                : {}),
+            };
+            return (await this.#options.onElicitation!(request, {
+              signal: AbortSignal.timeout(30_000),
+            })) as unknown as Record<string, unknown>;
+          }
+        : undefined,
+    );
+    this.#sdkMcpBridges.set(name, bridge);
+    try {
+      await mcpServer.connect(bridge);
+    } catch {
+      this.#sdkMcpBridges.delete(name);
+      this.#sdkMcpServers.delete(name);
+      throw new CLIConnectionError(`Failed to connect SDK MCP server: ${name}`);
+    }
+  }
+
+  async #disconnectSdkMcpServer(name: string): Promise<void> {
+    const prefix = `${name}:`;
+    for (const [key, { resolve }] of this.#pendingMcpResponses) {
+      if (key.startsWith(prefix)) {
+        resolve({
+          jsonrpc: "2.0",
+          error: { code: -32600, message: "Server disconnected" },
+        } as unknown as JSONRPCMessage);
+        this.#pendingMcpResponses.delete(key);
+      }
+    }
+    const bridge = this.#sdkMcpBridges.get(name);
+    if (bridge) {
+      await bridge.close();
+      this.#sdkMcpBridges.delete(name);
+    }
+    this.#sdkMcpServers.delete(name);
+  }
+
+  #sendMcpServerMessageToCli(serverName: string, message: JSONRPCMessage): void {
+    if ("id" in message && message.id != null) {
+      const key = `${serverName}:${message.id}`;
+      const pending = this.#pendingMcpResponses.get(key);
+      if (pending) {
+        pending.resolve(message);
+        this.#pendingMcpResponses.delete(key);
+        return;
+      }
+    }
+
+    void this.#sendControlRequest(
+      {
+        subtype: "mcp_message",
+        server_name: serverName,
+        message: message as JSONRPCMessage,
+      },
+      30_000,
+    ).catch(() => {});
   }
 }
 
