@@ -133,10 +133,12 @@ function toQuerySessionOptions(options: SDKSessionOptions): SessionClassOptions 
   return { ...options };
 }
 
+/** Creates a session that can send prompts incrementally and stream responses over time. */
 export function unstable_v2_createSession(_options: SDKSessionOptions): SDKSession {
   return new RuntimeSDKSession(toQuerySessionOptions(_options));
 }
 
+/** Sends a single prompt in a temporary session and resolves with the terminal result message. */
 export async function unstable_v2_prompt(
   message: string,
   options: SDKSessionOptions,
@@ -156,6 +158,7 @@ export async function unstable_v2_prompt(
   }
 }
 
+/** Resumes an existing Claude Code session by session ID. */
 export function unstable_v2_resumeSession(
   _sessionId: string,
   _options: SDKSessionOptions,
@@ -173,6 +176,7 @@ type LiteSessionFile = {
   tail: string;
 };
 
+/** Lists locally persisted Claude Code sessions visible from the configured session directories. */
 export async function listSessions(options: ListSessionsOptions = {}): Promise<SDKSessionInfo[]> {
   const directories = collectProjectDirectories(options.dir, options.includeWorktrees !== false);
   const sessions: SDKSessionInfo[] = [];
@@ -211,6 +215,7 @@ export async function listSessions(options: ListSessionsOptions = {}): Promise<S
   return paginate(sessions, options.limit, options.offset);
 }
 
+/** Looks up summary metadata for a persisted session by session ID. */
 export async function getSessionInfo(
   sessionId: string,
   options: GetSessionInfoOptions = {},
@@ -222,6 +227,7 @@ export async function getSessionInfo(
   return readSessionInfo(located.filePath, sessionId);
 }
 
+/** Returns transcript messages for a session, optionally including system messages. */
 export async function getSessionMessages(
   sessionId: string,
   options: GetSessionMessagesOptions = {},
@@ -241,6 +247,7 @@ export async function getSessionMessages(
   return paginate(filtered.map(toSessionMessage), options.limit, options.offset);
 }
 
+/** Lists subagent transcript IDs recorded beneath a parent session. */
 export async function listSubagents(
   sessionId: string,
   options: ListSubagentsOptions = {},
@@ -267,6 +274,7 @@ export async function listSubagents(
   return paginate(agents, options.limit, options.offset);
 }
 
+/** Returns transcript messages for a specific subagent session. */
 export async function getSubagentMessages(
   sessionId: string,
   agentId: string,
@@ -293,6 +301,7 @@ export async function getSubagentMessages(
   );
 }
 
+/** Sets or updates the custom title shown for a session. */
 export async function renameSession(
   sessionId: string,
   title: string,
@@ -318,6 +327,7 @@ export async function renameSession(
   );
 }
 
+/** Applies or clears a human-readable tag on a session. */
 export async function tagSession(
   sessionId: string,
   tag: string | null,
@@ -344,6 +354,7 @@ export async function tagSession(
   );
 }
 
+/** Deletes the persisted transcript file for a session. */
 export async function deleteSession(
   sessionId: string,
   options: SessionMutationOptions = {},
@@ -359,6 +370,7 @@ export async function deleteSession(
   }
 }
 
+/** Creates a new session transcript by copying messages from an existing session. */
 export async function forkSession(
   sessionId: string,
   options: ForkSessionOptions = {},

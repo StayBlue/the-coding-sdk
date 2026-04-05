@@ -8,6 +8,7 @@
  * Version 2.0. See the LICENSE file in the project root for details.
  */
 
+/** Possible reasons a Claude Code session can terminate. */
 export const EXIT_REASONS = [
   "clear",
   "resume",
@@ -17,6 +18,7 @@ export const EXIT_REASONS = [
   "bypass_permissions_disabled",
 ] as const;
 
+/** Hook event names recognized by the SDK hook configuration. */
 export const HOOK_EVENTS = [
   "PreToolUse",
   "PostToolUse",

@@ -15,6 +15,7 @@ export class ClaudeSDKError extends Error {
   }
 }
 
+/** Error thrown when an operation is aborted before completion. */
 export class AbortError extends Error {
   constructor(message = "Aborted") {
     super(message);

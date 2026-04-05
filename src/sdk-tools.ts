@@ -24,6 +24,7 @@ import {
   zToolsCallParamsSchema,
 } from "./schemas.ts";
 
+/** Defines an SDK-native MCP tool from a Zod schema and async handler. */
 export function tool<Schema extends AnyZodRawShape>(
   name: string,
   description: string,
@@ -53,6 +54,7 @@ export function tool<Schema extends AnyZodRawShape>(
   };
 }
 
+/** Creates an in-memory MCP server config that can be passed through SDK options. */
 export function createSdkMcpServer(options: {
   name: string;
   version?: string;

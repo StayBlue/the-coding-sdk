@@ -8,4 +8,5 @@
  * Version 2.0. See the LICENSE file in the project root for details.
  */
 
+/** Public entrypoint for querying Claude Code, managing sessions, and using SDK types. */
 export * from "./src/index.ts";

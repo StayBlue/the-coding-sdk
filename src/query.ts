@@ -59,6 +59,7 @@ type QueryControllerOptions = {
   options: Options;
 };
 
+/** Implements the streaming query API over a connected Claude Code transport. */
 export class QueryController implements Query {
   #transport: Transport;
   #options: Options;
@@ -859,6 +860,7 @@ export function createUserPromptMessage(prompt: string, sessionId = ""): SDKUser
   };
 }
 
+/** Starts a Claude Code query and returns an async iterator of streamed SDK messages. */
 export function query(params: {
   prompt: string | AsyncIterable<SDKUserMessage>;
   options?: Options;

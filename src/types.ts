@@ -22,16 +22,21 @@ import type { HOOK_EVENTS } from "./public-constants.ts";
 
 export type UUID = string;
 
+/** Output format discriminator values understood by the SDK. */
 export type OutputFormatType = "json_schema";
 
+/** Shared base shape for structured output format declarations. */
 export type BaseOutputFormat = {
   type: OutputFormatType;
 };
 
+/** Configuration scope used by Claude Code settings and hooks. */
 export type ConfigScope = "local" | "user" | "project";
 
+/** Fast-mode status reported by the runtime. */
 export type FastModeState = "off" | "cooldown" | "on";
 
+/** Error categories that can be attached to assistant or retry messages. */
 export type SDKAssistantMessageError =
   | "authentication_failed"
   | "billing_error"
@@ -41,8 +46,10 @@ export type SDKAssistantMessageError =
   | "unknown"
   | "max_output_tokens";
 
+/** High-level session status emitted by system status messages. */
 export type SDKStatus = "compacting" | null;
 
+/** Terminal reason attached to a completed result when available. */
 export type TerminalReason =
   | "blocking_limit"
   | "rapid_refill_breaker"
@@ -57,6 +64,7 @@ export type TerminalReason =
   | "max_turns"
   | "completed";
 
+/** Token and cost usage for a single model during a run. */
 export type ModelUsage = {
   inputTokens: number;
   outputTokens: number;
@@ -68,10 +76,12 @@ export type ModelUsage = {
   maxOutputTokens: number;
 };
 
+/** Version of Anthropic usage data with nullable fields normalized away. */
 export type NonNullableUsage = {
   [K in keyof BetaUsage]: NonNullable<BetaUsage[K]>;
 };
 
+/** Current rate-limit state reported by Claude Code. */
 export type SDKRateLimitInfo = {
   status: "allowed" | "allowed_warning" | "rejected";
   resetsAt?: number;
@@ -97,22 +107,26 @@ export type SDKRateLimitInfo = {
   surpassedThreshold?: number;
 };
 
+/** A tool invocation that was denied by the permission system. */
 export type SDKPermissionDenial = {
   tool_name: string;
   tool_use_id: string;
   tool_input: Record<string, unknown>;
 };
 
+/** A deferred tool call returned by the runtime for later execution. */
 export type SDKDeferredToolUse = {
   id: string;
   name: string;
   input: Record<string, unknown>;
 };
 
+/** MCP server config variants returned by status APIs. */
 export type McpServerStatusConfig =
   | McpServerConfigForProcessTransport
   | McpClaudeAIProxyServerConfig;
 
+/** Request payload sent when the runtime asks the host to handle an elicitation. */
 export type ElicitationRequest = {
   serverName: string;
   message: string;
@@ -122,36 +136,43 @@ export type ElicitationRequest = {
   requestedSchema?: Record<string, unknown>;
 };
 
+/** Response shape returned from an elicitation handler. */
 export type ElicitationResult = ElicitResult;
 
+/** Callback invoked when the runtime emits an elicitation request. */
 export type OnElicitation = (
   request: ElicitationRequest,
   options: { signal: AbortSignal },
 ) => Promise<ElicitationResult>;
 
+/** Result of replacing the active MCP server configuration set. */
 export type McpSetServersResult = {
   added: string[];
   removed: string[];
   errors: Record<string, string>;
 };
 
+/** Prompt request shown when the runtime asks the host to choose from options. */
 export type PromptRequest = {
   prompt: string;
   message: string;
   options: PromptRequestOption[];
 };
 
+/** Single selectable option within a prompt request. */
 export type PromptRequestOption = {
   key: string;
   label: string;
   description?: string;
 };
 
+/** Response submitted for a runtime prompt request. */
 export type PromptResponse = {
   prompt_response: string;
   selected: string;
 };
 
+/** Payload returned when plugins are reloaded at runtime. */
 export type SDKControlReloadPluginsResponse = {
   commands: SlashCommand[];
   agents: AgentInfo[];
@@ -164,10 +185,13 @@ export type SDKControlReloadPluginsResponse = {
   error_count: number;
 };
 
+/** Convenience alias for arbitrary Zod object shapes used by SDK tools. */
 export type AnyZodRawShape = ZodRawShape;
 
+/** Source from which the active API key was resolved. */
 export type ApiKeySource = "user" | "project" | "org" | "temporary" | "oauth";
 
+/** Permission mode values accepted by the Claude Code runtime. */
 export type PermissionMode =
   | "default"
   | "acceptEdits"
@@ -176,10 +200,13 @@ export type PermissionMode =
   | "dontAsk"
   | "auto";
 
+/** High-level permission decision behavior. */
 export type PermissionBehavior = "allow" | "deny" | "ask";
 
+/** Classification attached to persisted permission decisions. */
 export type PermissionDecisionClassification = "user_temporary" | "user_permanent" | "user_reject";
 
+/** Destination that a permission update should be applied to. */
 export type PermissionUpdateDestination =
   | "userSettings"
   | "projectSettings"
@@ -187,12 +214,16 @@ export type PermissionUpdateDestination =
   | "session"
   | "cliArg";
 
+/** Settings files that should be loaded for a run. */
 export type SettingSource = "user" | "project" | "local";
 
+/** SDK beta flags currently exposed through the options surface. */
 export type SdkBeta = "context-1m-2025-08-07";
 
+/** Model effort levels accepted by Claude Code. */
 export type EffortLevel = "low" | "medium" | "high" | "max";
 
+/** Account information returned by runtime introspection APIs. */
 export type AccountInfo = {
   email?: string;
   organization?: string;
@@ -202,6 +233,7 @@ export type AccountInfo = {
   apiProvider?: "firstParty" | "bedrock" | "vertex" | "foundry" | "anthropicAws";
 };
 
+/** Definition for a custom agent supplied through SDK options. */
 export type AgentDefinition = {
   description: string;
   prompt: string;
@@ -219,19 +251,23 @@ export type AgentDefinition = {
   permissionMode?: PermissionMode;
 };
 
+/** Metadata describing an available agent reported by the runtime. */
 export type AgentInfo = {
   name: string;
   description: string;
   model?: string;
 };
 
+/** MCP server reference or inline config attached to an agent definition. */
 export type AgentMcpServerSpec = string | Record<string, McpServerConfigForProcessTransport>;
 
+/** A single permission rule referenced by permission update APIs. */
 export type PermissionRuleValue = {
   toolName: string;
   ruleContent?: string;
 };
 
+/** Mutation applied to runtime or persisted permission state. */
 export type PermissionUpdate =
   | {
       type: "addRules" | "replaceRules" | "removeRules";
@@ -250,6 +286,7 @@ export type PermissionUpdate =
       destination: PermissionUpdateDestination;
     };
 
+/** Result returned from permission callbacks and can-use-tool checks. */
 export type PermissionResult =
   | {
       behavior: "allow";
@@ -266,6 +303,7 @@ export type PermissionResult =
       decisionClassification?: PermissionDecisionClassification;
     };
 
+/** Reason reported when a session ends. */
 export type ExitReason =
   | "clear"
   | "resume"
@@ -274,6 +312,7 @@ export type ExitReason =
   | "other"
   | "bypass_permissions_disabled";
 
+/** Common fields included in every hook callback input payload. */
 export type BaseHookInput = {
   session_id: string;
   transcript_path: string;
@@ -283,18 +322,21 @@ export type BaseHookInput = {
   agent_type?: string;
 };
 
+/** Hook payload for configuration file changes. */
 export type ConfigChangeHookInput = BaseHookInput & {
   hook_event_name: "ConfigChange";
   source: "user_settings" | "project_settings" | "local_settings" | "policy_settings" | "skills";
   file_path?: string;
 };
 
+/** Hook payload emitted when the working directory changes. */
 export type CwdChangedHookInput = BaseHookInput & {
   hook_event_name: "CwdChanged";
   old_cwd: string;
   new_cwd: string;
 };
 
+/** Hook payload for a new elicitation request. */
 export type ElicitationHookInput = BaseHookInput & {
   hook_event_name: "Elicitation";
   mcp_server_name: string;
@@ -305,6 +347,7 @@ export type ElicitationHookInput = BaseHookInput & {
   requested_schema?: Record<string, unknown>;
 };
 
+/** Hook payload for the completion of an elicitation flow. */
 export type ElicitationResultHookInput = BaseHookInput & {
   hook_event_name: "ElicitationResult";
   mcp_server_name: string;
@@ -314,12 +357,14 @@ export type ElicitationResultHookInput = BaseHookInput & {
   content?: Record<string, unknown>;
 };
 
+/** Hook payload for a tracked file change. */
 export type FileChangedHookInput = BaseHookInput & {
   hook_event_name: "FileChanged";
   file_path: string;
   event: "change" | "add" | "unlink";
 };
 
+/** Hook payload emitted immediately before a tool call runs. */
 export type PreToolUseHookInput = BaseHookInput & {
   hook_event_name: "PreToolUse";
   tool_name: string;
@@ -327,6 +372,7 @@ export type PreToolUseHookInput = BaseHookInput & {
   tool_use_id: string;
 };
 
+/** Hook payload emitted after a tool call succeeds. */
 export type PostToolUseHookInput = BaseHookInput & {
   hook_event_name: "PostToolUse";
   tool_name: string;
@@ -335,6 +381,7 @@ export type PostToolUseHookInput = BaseHookInput & {
   tool_use_id: string;
 };
 
+/** Hook payload emitted after a tool call fails. */
 export type PostToolUseFailureHookInput = BaseHookInput & {
   hook_event_name: "PostToolUseFailure";
   tool_name: string;
@@ -344,6 +391,7 @@ export type PostToolUseFailureHookInput = BaseHookInput & {
   is_interrupt?: boolean;
 };
 
+/** Hook payload for a runtime notification. */
 export type NotificationHookInput = BaseHookInput & {
   hook_event_name: "Notification";
   message: string;
@@ -351,6 +399,7 @@ export type NotificationHookInput = BaseHookInput & {
   notification_type: string;
 };
 
+/** Hook payload emitted when a tool call is denied. */
 export type PermissionDeniedHookInput = BaseHookInput & {
   hook_event_name: "PermissionDenied";
   tool_name: string;
@@ -359,17 +408,20 @@ export type PermissionDeniedHookInput = BaseHookInput & {
   reason: string;
 };
 
+/** Hook payload emitted after compaction completes. */
 export type PostCompactHookInput = BaseHookInput & {
   hook_event_name: "PostCompact";
   trigger: "manual" | "auto";
   compact_summary: string;
 };
 
+/** Hook payload for session shutdown. */
 export type SessionEndHookInput = BaseHookInput & {
   hook_event_name: "SessionEnd";
   reason: ExitReason;
 };
 
+/** Hook payload for session startup or resume. */
 export type SessionStartHookInput = BaseHookInput & {
   hook_event_name: "SessionStart";
   source: "startup" | "resume" | "clear" | "compact";
@@ -377,22 +429,26 @@ export type SessionStartHookInput = BaseHookInput & {
   model?: string;
 };
 
+/** Hook payload for SDK setup and maintenance phases. */
 export type SetupHookInput = BaseHookInput & {
   hook_event_name: "Setup";
   trigger: "init" | "maintenance";
 };
 
+/** Hook payload emitted when the user submits a prompt. */
 export type UserPromptSubmitHookInput = BaseHookInput & {
   hook_event_name: "UserPromptSubmit";
   prompt: string;
 };
 
+/** Hook payload for a stop-request check. */
 export type StopHookInput = BaseHookInput & {
   hook_event_name: "Stop";
   stop_hook_active: boolean;
   last_assistant_message?: string;
 };
 
+/** Hook payload for a failure while processing a stop request. */
 export type StopFailureHookInput = BaseHookInput & {
   hook_event_name: "StopFailure";
   error: unknown;
@@ -400,12 +456,14 @@ export type StopFailureHookInput = BaseHookInput & {
   last_assistant_message?: string;
 };
 
+/** Hook payload emitted when a subagent begins work. */
 export type SubagentStartHookInput = BaseHookInput & {
   hook_event_name: "SubagentStart";
   agent_id: string;
   agent_type: string;
 };
 
+/** Hook payload emitted when a subagent stops. */
 export type SubagentStopHookInput = BaseHookInput & {
   hook_event_name: "SubagentStop";
   stop_hook_active: boolean;
@@ -415,12 +473,14 @@ export type SubagentStopHookInput = BaseHookInput & {
   last_assistant_message?: string;
 };
 
+/** Hook payload emitted immediately before compaction starts. */
 export type PreCompactHookInput = BaseHookInput & {
   hook_event_name: "PreCompact";
   trigger: "manual" | "auto";
   custom_instructions: string | null;
 };
 
+/** Hook payload for an interactive permission request. */
 export type PermissionRequestHookInput = BaseHookInput & {
   hook_event_name: "PermissionRequest";
   tool_name: string;
@@ -428,6 +488,7 @@ export type PermissionRequestHookInput = BaseHookInput & {
   permission_suggestions?: PermissionUpdate[];
 };
 
+/** Hook payload for creation of a background or delegated task. */
 export type TaskCreatedHookInput = BaseHookInput & {
   hook_event_name: "TaskCreated";
   task_id: string;
@@ -437,6 +498,7 @@ export type TaskCreatedHookInput = BaseHookInput & {
   team_name?: string;
 };
 
+/** Hook payload for completion of a background or delegated task. */
 export type TaskCompletedHookInput = BaseHookInput & {
   hook_event_name: "TaskCompleted";
   task_id: string;
@@ -446,12 +508,14 @@ export type TaskCompletedHookInput = BaseHookInput & {
   team_name?: string;
 };
 
+/** Hook payload emitted when a teammate becomes idle. */
 export type TeammateIdleHookInput = BaseHookInput & {
   hook_event_name: "TeammateIdle";
   teammate_name: string;
   team_name: string;
 };
 
+/** Hook payload describing memory or instructions loaded into context. */
 export type InstructionsLoadedHookInput = BaseHookInput & {
   hook_event_name: "InstructionsLoaded";
   file_path: string;
@@ -462,18 +526,22 @@ export type InstructionsLoadedHookInput = BaseHookInput & {
   parent_file_path?: string;
 };
 
+/** Hook payload emitted when a worktree is created. */
 export type WorktreeCreateHookInput = BaseHookInput & {
   hook_event_name: "WorktreeCreate";
   name: string;
 };
 
+/** Hook payload emitted when a worktree is removed. */
 export type WorktreeRemoveHookInput = BaseHookInput & {
   hook_event_name: "WorktreeRemove";
   worktree_path: string;
 };
 
+/** Permission decision values allowed in hook outputs. */
 export type HookPermissionDecision = "allow" | "deny" | "ask" | "defer";
 
+/** Hook-specific output shape for `PreToolUse`. */
 export type PreToolUseHookSpecificOutput = {
   hookEventName: "PreToolUse";
   permissionDecision?: HookPermissionDecision;
@@ -482,11 +550,13 @@ export type PreToolUseHookSpecificOutput = {
   additionalContext?: string;
 };
 
+/** Hook-specific output shape for `UserPromptSubmit`. */
 export type UserPromptSubmitHookSpecificOutput = {
   hookEventName: "UserPromptSubmit";
   additionalContext?: string;
 };
 
+/** Hook-specific output shape for `SessionStart`. */
 export type SessionStartHookSpecificOutput = {
   hookEventName: "SessionStart";
   additionalContext?: string;
@@ -494,37 +564,44 @@ export type SessionStartHookSpecificOutput = {
   watchPaths?: string[];
 };
 
+/** Hook-specific output shape for `Setup`. */
 export type SetupHookSpecificOutput = {
   hookEventName: "Setup";
   additionalContext?: string;
 };
 
+/** Hook-specific output shape for `SubagentStart`. */
 export type SubagentStartHookSpecificOutput = {
   hookEventName: "SubagentStart";
   additionalContext?: string;
 };
 
+/** Hook-specific output shape for `PostToolUse`. */
 export type PostToolUseHookSpecificOutput = {
   hookEventName: "PostToolUse";
   additionalContext?: string;
   updatedMCPToolOutput?: unknown;
 };
 
+/** Hook-specific output shape for `PostToolUseFailure`. */
 export type PostToolUseFailureHookSpecificOutput = {
   hookEventName: "PostToolUseFailure";
   additionalContext?: string;
 };
 
+/** Hook-specific output shape for `PermissionDenied`. */
 export type PermissionDeniedHookSpecificOutput = {
   hookEventName: "PermissionDenied";
   retry?: boolean;
 };
 
+/** Hook-specific output shape for `Notification`. */
 export type NotificationHookSpecificOutput = {
   hookEventName: "Notification";
   additionalContext?: string;
 };
 
+/** Hook-specific output shape for `PermissionRequest`. */
 export type PermissionRequestHookSpecificOutput = {
   hookEventName: "PermissionRequest";
   decision:
@@ -540,33 +617,39 @@ export type PermissionRequestHookSpecificOutput = {
       };
 };
 
+/** Hook-specific output shape for `Elicitation`. */
 export type ElicitationHookSpecificOutput = {
   hookEventName: "Elicitation";
   action?: "accept" | "decline" | "cancel";
   content?: Record<string, unknown>;
 };
 
+/** Hook-specific output shape for `ElicitationResult`. */
 export type ElicitationResultHookSpecificOutput = {
   hookEventName: "ElicitationResult";
   action?: "accept" | "decline" | "cancel";
   content?: Record<string, unknown>;
 };
 
+/** Hook-specific output shape for `CwdChanged`. */
 export type CwdChangedHookSpecificOutput = {
   hookEventName: "CwdChanged";
   watchPaths?: string[];
 };
 
+/** Hook-specific output shape for `FileChanged`. */
 export type FileChangedHookSpecificOutput = {
   hookEventName: "FileChanged";
   watchPaths?: string[];
 };
 
+/** Hook-specific output shape for `WorktreeCreate`. */
 export type WorktreeCreateHookSpecificOutput = {
   hookEventName: "WorktreeCreate";
   worktreePath: string;
 };
 
+/** Union of all hook callback input payloads. */
 export type HookInput =
   | PreToolUseHookInput
   | PostToolUseHookInput
@@ -596,6 +679,7 @@ export type HookInput =
   | WorktreeCreateHookInput
   | WorktreeRemoveHookInput;
 
+/** Synchronous hook callback response payload. */
 export type SyncHookJSONOutput = {
   continue?: boolean;
   suppressOutput?: boolean;
@@ -621,27 +705,33 @@ export type SyncHookJSONOutput = {
     | WorktreeCreateHookSpecificOutput;
 };
 
+/** Asynchronous hook callback response payload. */
 export type AsyncHookJSONOutput = {
   async: true;
   asyncTimeout?: number;
 };
 
+/** JSON payload returned from a hook callback. */
 export type HookJSONOutput = SyncHookJSONOutput | AsyncHookJSONOutput;
 
+/** Supported hook event names derived from the public constant list. */
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 
+/** Hook callback signature used in runtime hook configuration. */
 export type HookCallback = (
   input: HookInput,
   toolUseID: string | undefined,
   options: { signal: AbortSignal },
 ) => Promise<HookJSONOutput>;
 
+/** Matcher and callback bundle for a specific hook event registration. */
 export interface HookCallbackMatcher {
   matcher?: string;
   hooks: HookCallback[];
   timeout?: number;
 }
 
+/** Callback used to decide whether a tool call should be allowed. */
 export type CanUseTool = (
   toolName: string,
   input: Record<string, unknown>,
@@ -658,23 +748,31 @@ export type CanUseTool = (
   },
 ) => Promise<PermissionResult>;
 
+/** Plugin configuration for loading a local Claude Code plugin. */
 export type SdkPluginConfig = {
   type: "local";
   path: string;
 };
 
+/** Structured output request that supplies a JSON schema. */
 export type JsonSchemaOutputFormat = {
   type: "json_schema";
   schema: Record<string, unknown>;
 };
 
+/** Structured output mode supported by the SDK. */
 export type OutputFormat = JsonSchemaOutputFormat;
 
+/** Thinking mode that lets the runtime choose the budget adaptively. */
 export type ThinkingAdaptive = { type: "adaptive" };
+/** Thinking mode with an optional explicit budget. */
 export type ThinkingEnabled = { type: "enabled"; budgetTokens?: number };
+/** Thinking mode that disables extended reasoning. */
 export type ThinkingDisabled = { type: "disabled" };
+/** Configures Claude Code thinking behavior for a query or session. */
 export type ThinkingConfig = ThinkingAdaptive | ThinkingEnabled | ThinkingDisabled;
 
+/** Network-related sandbox allowances for Claude Code. */
 export type SandboxNetworkConfig = {
   allowedDomains?: string[];
   allowManagedDomainsOnly?: boolean;
@@ -685,6 +783,7 @@ export type SandboxNetworkConfig = {
   socksProxyPort?: number;
 };
 
+/** Filesystem-related sandbox allowances for Claude Code. */
 export type SandboxFilesystemConfig = {
   allowWrite?: string[];
   denyWrite?: string[];
@@ -693,8 +792,10 @@ export type SandboxFilesystemConfig = {
   allowManagedReadPathsOnly?: boolean;
 };
 
+/** Sandbox violations that should be ignored for specific commands or tools. */
 export type SandboxIgnoreViolations = Record<string, string[]>;
 
+/** Full sandbox configuration passed to Claude Code. */
 export type SandboxSettings = {
   enabled?: boolean;
   failIfUnavailable?: boolean;
@@ -712,30 +813,35 @@ export type SandboxSettings = {
   };
 };
 
+/** Tool-specific runtime configuration. */
 export type ToolConfig = {
   askUserQuestion?: {
     previewFormat?: "markdown" | "html";
   };
 };
 
+/** MCP server configuration for the Claude.ai proxy transport. */
 export type McpClaudeAIProxyServerConfig = {
   type: "claudeai-proxy";
   url: string;
   id: string;
 };
 
+/** MCP server configuration for HTTP transport. */
 export type McpHttpServerConfig = {
   type: "http";
   url: string;
   headers?: Record<string, string>;
 };
 
+/** MCP server configuration for Server-Sent Events transport. */
 export type McpSSEServerConfig = {
   type: "sse";
   url: string;
   headers?: Record<string, string>;
 };
 
+/** MCP server configuration for a stdio-spawned server process. */
 export type McpStdioServerConfig = {
   type: "stdio";
   command: string;
@@ -743,33 +849,39 @@ export type McpStdioServerConfig = {
   env?: Record<string, string>;
 };
 
+/** In-memory SDK representation of an MCP server and its registered tools. */
 export interface SdkMcpServerInstance {
   name: string;
   version?: string;
   tools: Array<SdkMcpToolDefinition>;
 }
 
+/** Identifier-only SDK MCP server reference used in transport-facing config. */
 export type McpSdkServerConfig = {
   type: "sdk";
   name: string;
 };
 
+/** SDK MCP server config paired with the concrete in-memory server instance. */
 export type McpSdkServerConfigWithInstance = McpSdkServerConfig & {
   instance: SdkMcpServerInstance;
 };
 
+/** Supported MCP server configuration variants accepted by the SDK. */
 export type McpServerConfig =
   | McpStdioServerConfig
   | McpSSEServerConfig
   | McpHttpServerConfig
   | McpSdkServerConfigWithInstance;
 
+/** MCP config variants that can be forwarded directly to the Claude Code process. */
 export type McpServerConfigForProcessTransport =
   | McpStdioServerConfig
   | McpSSEServerConfig
   | McpHttpServerConfig
   | McpSdkServerConfig;
 
+/** Live connection status for a configured MCP server. */
 export type McpServerStatus = {
   name: string;
   status: "connected" | "failed" | "needs-auth" | "pending" | "disabled";
@@ -787,12 +899,14 @@ export type McpServerStatus = {
   }>;
 };
 
+/** Slash command metadata returned by the runtime. */
 export type SlashCommand = {
   name: string;
   description: string;
   argumentHint: string;
 };
 
+/** Model capability metadata returned by the runtime. */
 export type ModelInfo = {
   value: string;
   displayName: string;
@@ -804,6 +918,7 @@ export type ModelInfo = {
   supportsAutoMode?: boolean;
 };
 
+/** Definition of a tool exposed through an SDK-managed MCP server. */
 export type SdkMcpToolDefinition<Schema extends AnyZodRawShape = AnyZodRawShape> = {
   name: string;
   description: string;
@@ -813,6 +928,7 @@ export type SdkMcpToolDefinition<Schema extends AnyZodRawShape = AnyZodRawShape>
   handler: BivariantAsyncHandler<InferShape<Schema>, unknown, CallToolResult>;
 };
 
+/** Infers the output object type from a Zod raw shape. */
 export type InferShape<T extends AnyZodRawShape> = {
   [K in keyof T]: T[K] extends { _output: infer O } ? O : never;
 };
@@ -825,6 +941,7 @@ export type TaskBudget = {
   total: number;
 };
 
+/** Common runtime options for queries, sessions, and transport startup. */
 export type Options = {
   abortController?: AbortController;
   additionalDirectories?: string[];
@@ -889,6 +1006,7 @@ export type Options = {
   spawnClaudeCodeProcess?: (options: SpawnOptions) => SpawnedProcess;
 };
 
+/** Parsed Claude Code settings payload. */
 export type Settings = Record<string, unknown>;
 
 export type SDKBaseMessage = {
@@ -897,6 +1015,7 @@ export type SDKBaseMessage = {
   session_id?: string;
 };
 
+/** User-authored input message sent to Claude Code. */
 export type SDKUserMessage = SDKBaseMessage & {
   type: "user";
   message: MessageParam;
@@ -907,6 +1026,7 @@ export type SDKUserMessage = SDKBaseMessage & {
   timestamp?: string;
 };
 
+/** Assistant message emitted by Claude Code during a query or session. */
 export type SDKAssistantMessage = SDKBaseMessage & {
   type: "assistant";
   message: Record<string, unknown>;
@@ -914,8 +1034,10 @@ export type SDKAssistantMessage = SDKBaseMessage & {
   error?: SDKAssistantMessageError;
 };
 
+/** Terminal result message emitted when a query finishes. */
 export type SDKResultMessage = SDKResultSuccess | SDKResultError;
 
+/** Initial system message describing the active session environment and capabilities. */
 export type SDKSystemMessage = {
   type: "system";
   subtype: "init";
@@ -943,17 +1065,20 @@ export type SDKSystemMessage = {
   session_id: string;
 };
 
+/** Raw streaming event emitted while an assistant message is still in progress. */
 export type SDKPartialAssistantMessage = SDKBaseMessage & {
   type: "stream_event";
   event: BetaRawMessageStreamEvent;
   parent_tool_use_id: string | null;
 };
 
+/** Streaming message carrying updated rate-limit information. */
 export type SDKRateLimitEvent = SDKBaseMessage & {
   type: "rate_limit_event";
   rate_limit_info: SDKRateLimitInfo;
 };
 
+/** Progress update for a running tool call. */
 export type SDKToolProgressMessage = SDKBaseMessage & {
   type: "tool_progress";
   tool_use_id: string;
@@ -963,17 +1088,20 @@ export type SDKToolProgressMessage = SDKBaseMessage & {
   task_id?: string;
 };
 
+/** Summary emitted after one or more tool calls complete. */
 export type SDKToolUseSummaryMessage = SDKBaseMessage & {
   type: "tool_use_summary";
   summary: string;
   preceding_tool_use_ids: string[];
 };
 
+/** Suggested follow-up prompt emitted by the runtime. */
 export type SDKPromptSuggestionMessage = SDKBaseMessage & {
   type: "prompt_suggestion";
   suggestion: string;
 };
 
+/** Replayed user message emitted when restoring existing transcript history. */
 export type SDKUserMessageReplay = SDKBaseMessage & {
   type: "user";
   message: MessageParam;
@@ -988,6 +1116,7 @@ export type SDKUserMessageReplay = SDKBaseMessage & {
   file_attachments?: unknown[];
 };
 
+/** Authentication status update emitted while login is in progress. */
 export type SDKAuthStatusMessage = {
   type: "auth_status";
   isAuthenticating: boolean;
@@ -997,6 +1126,7 @@ export type SDKAuthStatusMessage = {
   session_id: string;
 };
 
+/** Successful terminal result returned at the end of a query. */
 export type SDKResultSuccess = {
   type: "result";
   subtype: "success";
@@ -1018,6 +1148,7 @@ export type SDKResultSuccess = {
   session_id: string;
 };
 
+/** Error terminal result returned when a query ends unsuccessfully. */
 export type SDKResultError = {
   type: "result";
   subtype:
@@ -1041,6 +1172,7 @@ export type SDKResultError = {
   session_id: string;
 };
 
+/** System message indicating an upstream API retry attempt. */
 export type SDKAPIRetryMessage = {
   type: "system";
   subtype: "api_retry";
@@ -1053,6 +1185,7 @@ export type SDKAPIRetryMessage = {
   session_id: string;
 };
 
+/** Boundary marker emitted when the transcript is compacted. */
 export type SDKCompactBoundaryMessage = {
   type: "system";
   subtype: "compact_boundary";
@@ -1064,6 +1197,7 @@ export type SDKCompactBoundaryMessage = {
   session_id: string;
 };
 
+/** System message emitted when an elicitation flow completes. */
 export type SDKElicitationCompleteMessage = {
   type: "system";
   subtype: "elicitation_complete";
@@ -1073,6 +1207,7 @@ export type SDKElicitationCompleteMessage = {
   session_id: string;
 };
 
+/** System message describing files persisted by the runtime. */
 export type SDKFilesPersistedEvent = {
   type: "system";
   subtype: "files_persisted";
@@ -1089,6 +1224,7 @@ export type SDKFilesPersistedEvent = {
   session_id: string;
 };
 
+/** System message emitted when a hook starts running. */
 export type SDKHookStartedMessage = {
   type: "system";
   subtype: "hook_started";
@@ -1099,6 +1235,7 @@ export type SDKHookStartedMessage = {
   session_id: string;
 };
 
+/** System message carrying stdout or stderr from a running hook. */
 export type SDKHookProgressMessage = {
   type: "system";
   subtype: "hook_progress";
@@ -1112,6 +1249,7 @@ export type SDKHookProgressMessage = {
   session_id: string;
 };
 
+/** Final system message for a completed hook execution. */
 export type SDKHookResponseMessage = {
   type: "system";
   subtype: "hook_response";
@@ -1127,6 +1265,7 @@ export type SDKHookResponseMessage = {
   session_id: string;
 };
 
+/** System message carrying output from a local command. */
 export type SDKLocalCommandOutputMessage = {
   type: "system";
   subtype: "local_command_output";
@@ -1135,6 +1274,7 @@ export type SDKLocalCommandOutputMessage = {
   session_id: string;
 };
 
+/** System message indicating a change in session execution state. */
 export type SDKSessionStateChangedMessage = {
   type: "system";
   subtype: "session_state_changed";
@@ -1143,6 +1283,7 @@ export type SDKSessionStateChangedMessage = {
   session_id: string;
 };
 
+/** System status message for compaction and permission mode updates. */
 export type SDKStatusMessage = {
   type: "system";
   subtype: "status";
@@ -1152,6 +1293,7 @@ export type SDKStatusMessage = {
   session_id: string;
 };
 
+/** Notification emitted when a background task finishes or stops. */
 export type SDKTaskNotificationMessage = {
   type: "system";
   subtype: "task_notification";
@@ -1169,6 +1311,7 @@ export type SDKTaskNotificationMessage = {
   session_id: string;
 };
 
+/** Progress update for a background task. */
 export type SDKTaskProgressMessage = {
   type: "system";
   subtype: "task_progress";
@@ -1186,6 +1329,7 @@ export type SDKTaskProgressMessage = {
   session_id: string;
 };
 
+/** Notification emitted when a background task starts. */
 export type SDKTaskStartedMessage = {
   type: "system";
   subtype: "task_started";
@@ -1199,6 +1343,7 @@ export type SDKTaskStartedMessage = {
   session_id: string;
 };
 
+/** Union of streamed messages emitted by queries and sessions. */
 export type SDKMessage =
   | SDKUserMessage
   | SDKUserMessageReplay
@@ -1225,6 +1370,7 @@ export type SDKMessage =
   | SDKFilesPersistedEvent
   | SDKElicitationCompleteMessage;
 
+/** Response payload returned by the runtime initialize control request. */
 export type SDKControlInitializeResponse = {
   commands: SlashCommand[];
   agents: AgentInfo[];
@@ -1235,6 +1381,7 @@ export type SDKControlInitializeResponse = {
   fast_mode_state?: FastModeState;
 };
 
+/** Detailed token breakdown returned by the context-usage control request. */
 export type SDKControlGetContextUsageResponse = {
   categories: Array<{
     name: string;
@@ -1331,6 +1478,7 @@ export type RewindFilesOptions = {
   dryRun?: boolean;
 };
 
+/** Result of attempting to rewind file edits to a prior user message. */
 export type RewindFilesResult = {
   canRewind: boolean;
   error?: string;
@@ -1339,10 +1487,12 @@ export type RewindFilesResult = {
   deletions?: number;
 };
 
+/** Result returned after creating a forked session transcript. */
 export type ForkSessionResult = {
   sessionId: string;
 };
 
+/** Summary metadata for a persisted Claude Code session transcript. */
 export type SDKSessionInfo = {
   sessionId: string;
   summary: string;
@@ -1356,6 +1506,7 @@ export type SDKSessionInfo = {
   createdAt?: number;
 };
 
+/** Long-lived session interface for sending prompts and streaming follow-up messages. */
 export interface SDKSession {
   readonly sessionId: string;
   send(message: string | SDKUserMessage): Promise<void>;
@@ -1364,8 +1515,10 @@ export interface SDKSession {
   [Symbol.asyncDispose](): Promise<void>;
 }
 
+/** Options accepted when creating or resuming a session. */
 export type SDKSessionOptions = Options;
 
+/** Transcript entry returned by session history helpers. */
 export type SessionMessage = {
   type: "user" | "assistant" | "system";
   uuid: string;
@@ -1374,10 +1527,12 @@ export type SessionMessage = {
   parent_tool_use_id: null;
 };
 
+/** Common options for local session mutation helpers. */
 export type SessionMutationOptions = {
   dir?: string;
 };
 
+/** Options for listing persisted sessions. */
 export type ListSessionsOptions = {
   dir?: string;
   limit?: number;
@@ -1385,10 +1540,12 @@ export type ListSessionsOptions = {
   includeWorktrees?: boolean;
 };
 
+/** Options for looking up a single persisted session. */
 export type GetSessionInfoOptions = {
   dir?: string;
 };
 
+/** Options for reading messages from a persisted session transcript. */
 export type GetSessionMessagesOptions = {
   dir?: string;
   limit?: number;
@@ -1396,6 +1553,7 @@ export type GetSessionMessagesOptions = {
   includeSystemMessages?: boolean;
 };
 
+/** Options for reading messages from a subagent transcript. */
 export type GetSubagentMessagesOptions = {
   dir?: string;
   limit?: number;
@@ -1403,17 +1561,20 @@ export type GetSubagentMessagesOptions = {
   includeSystemMessages?: boolean;
 };
 
+/** Options for listing subagent transcripts beneath a session. */
 export type ListSubagentsOptions = {
   dir?: string;
   limit?: number;
   offset?: number;
 };
 
+/** Options controlling how a session transcript is forked. */
 export type ForkSessionOptions = SessionMutationOptions & {
   upToMessageId?: string;
   title?: string;
 };
 
+/** Minimal child-process shape required by the subprocess transport. */
 export interface SpawnedProcess {
   stdin: NodeJS.WritableStream;
   stdout: NodeJS.ReadableStream;
@@ -1428,6 +1589,7 @@ export interface SpawnedProcess {
   off(event: "error", listener: (error: Error) => void): void;
 }
 
+/** Arguments provided when overriding process spawning. */
 export interface SpawnOptions {
   command: string;
   args: string[];
@@ -1460,6 +1622,7 @@ export type StdoutMessage =
       type: "keep_alive";
     };
 
+/** Low-level transport used by the query controller to talk to Claude Code. */
 export interface Transport {
   write(data: string): Promise<void>;
   close(): void;
@@ -1468,6 +1631,7 @@ export interface Transport {
   endInput(): void;
 }
 
+/** Streaming query handle with control methods for the active Claude Code run. */
 export interface Query extends AsyncGenerator<SDKMessage, void> {
   interrupt(): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
@@ -1495,6 +1659,7 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   close(): void;
 }
 
+/** Control request payloads that can be exchanged with the Claude Code process. */
 export type SDKControlRequestInner =
   | {
       subtype: "initialize";
@@ -1598,12 +1763,14 @@ export type SDKControlRequestInner =
       subtype: "reload_plugins";
     };
 
+/** Envelope for a single control request sent to the runtime. */
 export type SDKControlRequest = {
   type: "control_request";
   request_id: string;
   request: SDKControlRequestInner;
 };
 
+/** Envelope for a single control response returned by the runtime. */
 export type SDKControlResponse = {
   type: "control_response";
   response:
