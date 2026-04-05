@@ -106,6 +106,54 @@ function collectExportedMembers(sourceText) {
   return symbolMembers;
 }
 
+function collectExportedUnionConstituents(sourceText) {
+  const sourceFile = ts.createSourceFile(
+    "surface.d.ts",
+    sourceText,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TS,
+  );
+
+  const unionConstituents = new Map();
+
+  const getModifiers = (node) => {
+    if (!ts.canHaveModifiers(node)) return [];
+    return ts.getModifiers(node) ?? [];
+  };
+
+  const extractUnionBranchNames = (typeNode) => {
+    const names = [];
+    if (!ts.isUnionTypeNode(typeNode)) return names;
+    for (const branch of typeNode.types) {
+      if (ts.isTypeReferenceNode(branch) && ts.isIdentifier(branch.typeName)) {
+        names.push(branch.typeName.text);
+      }
+    }
+    return names.sort();
+  };
+
+  for (const statement of sourceFile.statements) {
+    const modifiers = getModifiers(statement);
+    const hasExport = modifiers.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+    if (!hasExport) continue;
+
+    if (
+      ts.isTypeAliasDeclaration(statement) &&
+      statement.name &&
+      statement.type &&
+      ts.isUnionTypeNode(statement.type)
+    ) {
+      const branches = extractUnionBranchNames(statement.type);
+      if (branches.length > 0) {
+        unionConstituents.set(statement.name.text, branches);
+      }
+    }
+  }
+
+  return unionConstituents;
+}
+
 function resolveReExportSources(sourceText, sourceFilePath) {
   const sourceFile = ts.createSourceFile(
     "surface.d.ts",
@@ -161,6 +209,59 @@ async function collectMembersFromDeclarationFiles(filePaths) {
     await processFile(filePath);
   }
   return merged;
+}
+
+async function collectUnionConstituentsFromDeclarationFiles(filePaths) {
+  const merged = new Map();
+  const visited = new Set();
+
+  const processFile = async (filePath) => {
+    if (visited.has(filePath)) return;
+    visited.add(filePath);
+
+    if (!(await Bun.file(filePath).exists())) return;
+
+    const text = await readDeclText(filePath);
+
+    for (const [symbol, constituents] of collectExportedUnionConstituents(text)) {
+      merged.set(symbol, constituents);
+    }
+
+    for (const source of resolveReExportSources(text, filePath)) {
+      await processFile(source);
+    }
+  };
+
+  for (const filePath of filePaths) {
+    await processFile(filePath);
+  }
+  return merged;
+}
+
+function checkUnionCoverage(referenceUnions, localUnions) {
+  const results = [];
+
+  for (const [symbol, refBranches] of referenceUnions) {
+    const localBranches = localUnions.get(symbol);
+    if (!localBranches) continue;
+
+    const localSet = new Set(localBranches);
+    const refSet = new Set(refBranches);
+    const missing = refBranches.filter((b) => !localSet.has(b));
+    const extra = localBranches.filter((b) => !refSet.has(b));
+
+    if (missing.length || extra.length) {
+      results.push({
+        symbol,
+        missing,
+        extra,
+        refCount: refBranches.length,
+        localCount: localBranches.length,
+      });
+    }
+  }
+
+  return results;
 }
 
 function checkMemberCoverage(referenceMembers, localMembers) {
@@ -502,6 +603,24 @@ async function main() {
     ? ((totalRefMembers - totalMissingMembers) / totalRefMembers) * 100
     : 100;
 
+  const referenceUnions = await collectUnionConstituentsFromDeclarationFiles([referenceDeclPath]);
+  const localUnions = await collectUnionConstituentsFromDeclarationFiles(
+    LOCAL_DECL_FILES.map((f) => joinPath(WORKSPACE_ROOT, f)),
+  );
+  const unionDiffs = checkUnionCoverage(referenceUnions, localUnions);
+
+  let totalRefBranches = 0;
+  let totalMissingBranches = 0;
+  for (const [, branches] of referenceUnions) {
+    totalRefBranches += branches.length;
+  }
+  for (const diff of unionDiffs) {
+    totalMissingBranches += diff.missing.length;
+  }
+  const unionCoverage = totalRefBranches
+    ? ((totalRefBranches - totalMissingBranches) / totalRefBranches) * 100
+    : 100;
+
   const compatible = matched.length - mismatches.length;
   const implemented = compatible;
   const coverage = referenceSet.size ? (implemented / referenceSet.size) * 100 : 100;
@@ -540,8 +659,26 @@ async function main() {
     }
   }
 
-  const totalItems = referenceSet.size + totalRefMembers;
-  const totalCovered = implemented + (totalRefMembers - totalMissingMembers);
+  console.log(
+    `\nUnion coverage: ${unionCoverage.toFixed(2)}% (${totalRefBranches - totalMissingBranches}/${totalRefBranches} branches)`,
+  );
+  if (unionDiffs.length) {
+    console.log(`Unions with constituent differences: ${unionDiffs.length}`);
+    for (const diff of unionDiffs) {
+      if (diff.missing.length) {
+        console.log(`  ${diff.symbol}: missing ${diff.missing.join(", ")}`);
+      }
+      if (diff.extra.length) {
+        console.log(`  ${diff.symbol}: extra ${diff.extra.join(", ")}`);
+      }
+    }
+  }
+
+  const totalItems = referenceSet.size + totalRefMembers + totalRefBranches;
+  const totalCovered =
+    implemented +
+    (totalRefMembers - totalMissingMembers) +
+    (totalRefBranches - totalMissingBranches);
   const combinedCoverage = totalItems ? (totalCovered / totalItems) * 100 : 100;
   await writeBadgeFile(combinedCoverage);
   await updateGist(combinedCoverage);

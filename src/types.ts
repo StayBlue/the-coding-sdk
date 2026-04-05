@@ -168,7 +168,13 @@ export type AnyZodRawShape = ZodRawShape;
 
 export type ApiKeySource = "user" | "project" | "org" | "temporary" | "oauth";
 
-export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk";
+export type PermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "bypassPermissions"
+  | "plan"
+  | "dontAsk"
+  | "auto";
 
 export type PermissionBehavior = "allow" | "deny" | "ask";
 
@@ -907,9 +913,31 @@ export type SDKAssistantMessage = SDKBaseMessage & {
 
 export type SDKResultMessage = SDKResultSuccess | SDKResultError;
 
-export type SDKSystemMessage = SDKBaseMessage & {
+export type SDKSystemMessage = {
   type: "system";
-  subtype: string;
+  subtype: "init";
+  agents?: string[];
+  apiKeySource: ApiKeySource;
+  betas?: string[];
+  claude_code_version: string;
+  cwd: string;
+  tools: string[];
+  mcp_servers: {
+    name: string;
+    status: string;
+  }[];
+  model: string;
+  permissionMode: PermissionMode;
+  slash_commands: string[];
+  output_style: string;
+  skills: string[];
+  plugins: {
+    name: string;
+    path: string;
+  }[];
+  fast_mode_state?: FastModeState;
+  uuid: UUID;
+  session_id: string;
 };
 
 export type SDKPartialAssistantMessage = SDKBaseMessage & {
