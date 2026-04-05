@@ -8,7 +8,11 @@
  * Version 2.0. See the LICENSE file in the project root for details.
  */
 
-/** Entry point for building MCP tools and servers that integrate with the SDK. */
+/**
+ * Entry point for building MCP tools and servers that integrate with the SDK.
+ *
+ * @module
+ */
 export { createSdkMcpServer, tool } from "./src/sdk-tools.ts";
 export type {
   McpSdkServerConfig,
