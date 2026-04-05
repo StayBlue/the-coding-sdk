@@ -4,9 +4,9 @@
 
 An open-source implementation of an SDK.
 
-> [!IMPORTANT]
+> [!WARNING]
 >
-> While I am relatively confident in the API at this point, there are still runtime behaviors that are not fully validated. Use at your own risk.
+> This can still get your account banned. Official communication around this has been unreliable. See [this tweet](https://x.com/mattpocockuk/status/2040536403289764275).
 
 ## Usage
 
@@ -36,15 +36,15 @@ console.log("\n\nFinal result:", finalResult);
 
 ## Background
 
+> [!IMPORTANT]
+>
+> While I am relatively confident in the API at this point, there are still runtime behaviors that are not fully validated. Use at your own risk.
+
 This project grew out of a need for an SDK that could be fixed directly, instead of working around issues with brittle hacks.
 
 It was built primarily by referencing the official Python SDK and using types from the TypeScript SDK. Where information was missing in either, behavior was derived through reverse-engineering of the TypeScript SDK.
 
 Based on my rudimentary understanding of the Terms of Service, given that this is simply a wrapper around the CLI, there shouldn't be any issues.
-
-> [!WARNING]
->
-> This can still get your account banned. Official communication around this has been unreliable. See [this tweet](https://x.com/mattpocockuk/status/2040536403289764275).
 
 That said, both the official SDK and this SDK still depend on the closed-source CLI. If the problem lives in the CLI itself, it cannot be fixed here.
 
