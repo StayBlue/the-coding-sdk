@@ -48,6 +48,7 @@ import type {
   SDKMessage,
   SDKResultMessage,
   SDKUserMessage,
+  Settings,
   SlashCommand,
   StdoutMessage,
   Transport,
@@ -151,6 +152,19 @@ export class QueryController implements Query {
       subtype: "set_model",
       ...(model ? { model } : {}),
     });
+  }
+
+  async setMaxThinkingTokens(maxThinkingTokens: number | null): Promise<void> {
+    await this.#ready();
+    await this.#sendControlRequest({
+      subtype: "set_max_thinking_tokens",
+      max_thinking_tokens: maxThinkingTokens,
+    });
+  }
+
+  async applyFlagSettings(settings: Settings): Promise<void> {
+    await this.#ready();
+    await this.#sendControlRequest({ subtype: "apply_flag_settings", settings });
   }
 
   async initializationResult(): Promise<SDKControlInitializeResponse> {
@@ -304,6 +318,11 @@ export class QueryController implements Query {
       subtype: "stop_task",
       task_id: taskId,
     });
+  }
+
+  async seedReadState(path: string, mtime: number): Promise<void> {
+    await this.#ready();
+    await this.#sendControlRequest({ subtype: "seed_read_state", path, mtime });
   }
 
   close(error?: unknown): void {

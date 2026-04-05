@@ -788,12 +788,14 @@ export type SlashCommand = {
 };
 
 export type ModelInfo = {
-  id?: string;
-  name?: string;
-  display_name?: string;
-  description?: string;
-  supports_thinking?: boolean;
-  [key: string]: unknown;
+  value: string;
+  displayName: string;
+  description: string;
+  supportsEffort?: boolean;
+  supportedEffortLevels?: ("low" | "medium" | "high" | "max")[];
+  supportsAdaptiveThinking?: boolean;
+  supportsFastMode?: boolean;
+  supportsAutoMode?: boolean;
 };
 
 export type SdkMcpToolDefinition<Schema extends AnyZodRawShape = AnyZodRawShape> = {
@@ -1047,6 +1049,11 @@ export type SDKFilesPersistedEvent = {
     filename: string;
     file_id: string;
   }>;
+  failed: Array<{
+    filename: string;
+    error: string;
+  }>;
+  processed_at: string;
   uuid: UUID;
   session_id: string;
 };
@@ -1208,7 +1215,85 @@ export type SDKControlGetContextUsageResponse = {
   maxTokens: number;
   rawMaxTokens: number;
   percentage: number;
-  [key: string]: unknown;
+  gridRows: Array<
+    Array<{
+      color: string;
+      isFilled: boolean;
+      categoryName: string;
+      tokens: number;
+      percentage: number;
+      squareFullness: number;
+    }>
+  >;
+  model: string;
+  memoryFiles: Array<{
+    path: string;
+    type: string;
+    tokens: number;
+  }>;
+  mcpTools: Array<{
+    name: string;
+    serverName: string;
+    tokens: number;
+    isLoaded?: boolean;
+  }>;
+  deferredBuiltinTools?: Array<{
+    name: string;
+    tokens: number;
+    isLoaded: boolean;
+  }>;
+  systemTools?: Array<{
+    name: string;
+    tokens: number;
+  }>;
+  systemPromptSections?: Array<{
+    name: string;
+    tokens: number;
+  }>;
+  agents: Array<{
+    agentType: string;
+    source: string;
+    tokens: number;
+  }>;
+  slashCommands?: {
+    totalCommands: number;
+    includedCommands: number;
+    tokens: number;
+  };
+  skills?: {
+    totalSkills: number;
+    includedSkills: number;
+    tokens: number;
+    skillFrontmatter: Array<{
+      name: string;
+      source: string;
+      tokens: number;
+    }>;
+  };
+  autoCompactThreshold?: number;
+  isAutoCompactEnabled: boolean;
+  messageBreakdown?: {
+    toolCallTokens: number;
+    toolResultTokens: number;
+    attachmentTokens: number;
+    assistantMessageTokens: number;
+    userMessageTokens: number;
+    toolCallsByType: Array<{
+      name: string;
+      callTokens: number;
+      resultTokens: number;
+    }>;
+    attachmentsByType: Array<{
+      name: string;
+      tokens: number;
+    }>;
+  };
+  apiUsage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens: number;
+    cache_read_input_tokens: number;
+  } | null;
 };
 
 export type RewindFilesOptions = {
@@ -1367,6 +1452,8 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   interrupt(): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setModel(model?: string): Promise<void>;
+  setMaxThinkingTokens(maxThinkingTokens: number | null): Promise<void>;
+  applyFlagSettings(settings: Settings): Promise<void>;
   initializationResult(): Promise<SDKControlInitializeResponse>;
   supportedCommands(): Promise<SlashCommand[]>;
   supportedModels(): Promise<ModelInfo[]>;
@@ -1381,6 +1468,7 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   reloadPlugins(): Promise<SDKControlReloadPluginsResponse>;
   streamInput(stream: AsyncIterable<SDKUserMessage>): Promise<void>;
   stopTask(taskId: string): Promise<void>;
+  seedReadState(path: string, mtime: number): Promise<void>;
   close(): void;
 }
 
@@ -1441,8 +1529,21 @@ export type SDKControlRequestInner =
       model?: string;
     }
   | {
+      subtype: "set_max_thinking_tokens";
+      max_thinking_tokens: number | null;
+    }
+  | {
+      subtype: "apply_flag_settings";
+      settings: Settings;
+    }
+  | {
       subtype: "set_permission_mode";
       mode: PermissionMode;
+    }
+  | {
+      subtype: "seed_read_state";
+      path: string;
+      mtime: number;
     }
   | {
       subtype: "stop_task";
