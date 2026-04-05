@@ -52,6 +52,143 @@ function badgeColor(coverage) {
   return "red";
 }
 
+function collectExportedMembers(sourceText) {
+  const sourceFile = ts.createSourceFile(
+    "surface.d.ts",
+    sourceText,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TS,
+  );
+
+  const symbolMembers = new Map();
+
+  const getModifiers = (node) => {
+    if (!ts.canHaveModifiers(node)) return [];
+    return ts.getModifiers(node) ?? [];
+  };
+
+  const extractMembers = (members) => {
+    const names = [];
+    for (const member of members) {
+      if (
+        (ts.isPropertySignature(member) || ts.isMethodSignature(member)) &&
+        member.name &&
+        ts.isIdentifier(member.name)
+      ) {
+        names.push(member.name.text);
+      }
+    }
+    return names.sort();
+  };
+
+  for (const statement of sourceFile.statements) {
+    const modifiers = getModifiers(statement);
+    const hasExport = modifiers.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+    if (!hasExport) continue;
+
+    if (ts.isInterfaceDeclaration(statement) && statement.name) {
+      symbolMembers.set(statement.name.text, extractMembers(statement.members));
+      continue;
+    }
+
+    if (
+      ts.isTypeAliasDeclaration(statement) &&
+      statement.name &&
+      statement.type &&
+      ts.isTypeLiteralNode(statement.type)
+    ) {
+      symbolMembers.set(statement.name.text, extractMembers(statement.type.members));
+      continue;
+    }
+  }
+
+  return symbolMembers;
+}
+
+function resolveReExportSources(sourceText, sourceFilePath) {
+  const sourceFile = ts.createSourceFile(
+    "surface.d.ts",
+    sourceText,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const dir = sourceFilePath.replace(/\/[^/]+$/, "");
+  const sources = new Set();
+
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isExportDeclaration(statement) &&
+      statement.moduleSpecifier &&
+      ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      const specifier = statement.moduleSpecifier.text;
+      if (specifier.startsWith(".")) {
+        const resolved = joinPath(dir, specifier);
+        sources.add(resolved);
+        sources.add(resolved.replace(/\.ts$/, ".d.ts"));
+        if (!resolved.endsWith(".ts")) sources.add(resolved + ".d.ts");
+      }
+    }
+  }
+
+  return [...sources];
+}
+
+async function collectMembersFromDeclarationFiles(filePaths) {
+  const merged = new Map();
+  const visited = new Set();
+
+  const processFile = async (filePath) => {
+    if (visited.has(filePath)) return;
+    visited.add(filePath);
+
+    if (!(await Bun.file(filePath).exists())) return;
+
+    const text = await readDeclText(filePath);
+
+    for (const [symbol, members] of collectExportedMembers(text)) {
+      merged.set(symbol, members);
+    }
+
+    for (const source of resolveReExportSources(text, filePath)) {
+      await processFile(source);
+    }
+  };
+
+  for (const filePath of filePaths) {
+    await processFile(filePath);
+  }
+  return merged;
+}
+
+function checkMemberCoverage(referenceMembers, localMembers) {
+  const results = [];
+
+  for (const [symbol, refMembers] of referenceMembers) {
+    const localMems = localMembers.get(symbol);
+    if (!localMems) continue;
+
+    const localSet = new Set(localMems);
+    const refSet = new Set(refMembers);
+    const missing = refMembers.filter((m) => !localSet.has(m));
+    const extra = localMems.filter((m) => !refSet.has(m));
+
+    if (missing.length || extra.length) {
+      results.push({
+        symbol,
+        missing,
+        extra,
+        refCount: refMembers.length,
+        localCount: localMems.length,
+      });
+    }
+  }
+
+  return results;
+}
+
 function collectExportedNames(sourceText) {
   const sourceFile = ts.createSourceFile(
     "surface.d.ts",
@@ -224,19 +361,14 @@ async function updateGist(coverage) {
 }
 
 function checkTypeCompatibility(localFiles, referenceFile, symbolNames) {
-  // Build a bridge file that imports both sides and checks assignability
-  // by assigning local → reference for each symbol.
   const localImports = symbolNames.map((n) => `${n} as local_${n}`).join(", ");
   const refImports = symbolNames.map((n) => `${n} as ref_${n}`).join(", ");
 
-  // We use two synthetic files: one re-exports from local, one from reference.
-  // Then a third file assigns local to ref to test assignability.
   const bridgeSource = [
     ...symbolNames.map(
       (n) => `declare const __local_${n}: typeof import("./local_surface").local_${n};`,
     ),
     ...symbolNames.map((n) => `declare const __ref_${n}: typeof import("./ref_surface").ref_${n};`),
-    // Test: local assignable to reference (local satisfies the reference contract)
     ...symbolNames.map((n) => `const __check_${n}: typeof __ref_${n} = __local_${n};`),
   ].join("\n");
 
@@ -247,7 +379,6 @@ function checkTypeCompatibility(localFiles, referenceFile, symbolNames) {
     })
     .join("\n");
 
-  // For the reference, we need the path relative to cwd
   const refRelPath = referenceFile.replace(/\.d\.ts$/, "").replace(/\.ts$/, "");
   const refSurfaceSource = `export { ${refImports} } from "./${refRelPath}";`;
 
@@ -296,7 +427,6 @@ function checkTypeCompatibility(localFiles, referenceFile, symbolNames) {
 
   for (const diag of diagnostics) {
     const text = ts.flattenDiagnosticMessageText(diag.messageText, "\n");
-    // Match our __check_ assignments to find which symbol failed
     if (diag.file?.fileName?.endsWith("__bridge.ts")) {
       const lineText = diag.file.text.substring(
         diag.file.getLineAndCharacterOfPosition(diag.start).line === 0
@@ -354,6 +484,24 @@ async function main() {
 
   const mismatches = checkTypeCompatibility(LOCAL_DECL_FILES, referenceDeclPath, matched);
 
+  const referenceMembers = await collectMembersFromDeclarationFiles([referenceDeclPath]);
+  const localMembers = await collectMembersFromDeclarationFiles(
+    LOCAL_DECL_FILES.map((f) => joinPath(WORKSPACE_ROOT, f)),
+  );
+  const memberDiffs = checkMemberCoverage(referenceMembers, localMembers);
+
+  let totalRefMembers = 0;
+  let totalMissingMembers = 0;
+  for (const [, members] of referenceMembers) {
+    totalRefMembers += members.length;
+  }
+  for (const diff of memberDiffs) {
+    totalMissingMembers += diff.missing.length;
+  }
+  const memberCoverage = totalRefMembers
+    ? ((totalRefMembers - totalMissingMembers) / totalRefMembers) * 100
+    : 100;
+
   const compatible = matched.length - mismatches.length;
   const implemented = compatible;
   const coverage = referenceSet.size ? (implemented / referenceSet.size) * 100 : 100;
@@ -377,8 +525,26 @@ async function main() {
   if (missing.length) console.log(`\nMissing: ${missing.join(", ")}`);
   if (extra.length) console.log(`Extra: ${extra.join(", ")}`);
 
-  await writeBadgeFile(coverage);
-  await updateGist(coverage);
+  console.log(
+    `\nMember coverage: ${memberCoverage.toFixed(2)}% (${totalRefMembers - totalMissingMembers}/${totalRefMembers} members)`,
+  );
+  if (memberDiffs.length) {
+    console.log(`Symbols with member differences: ${memberDiffs.length}`);
+    for (const diff of memberDiffs) {
+      if (diff.missing.length) {
+        console.log(`  ${diff.symbol}: missing ${diff.missing.join(", ")}`);
+      }
+      if (diff.extra.length) {
+        console.log(`  ${diff.symbol}: extra ${diff.extra.join(", ")}`);
+      }
+    }
+  }
+
+  const totalItems = referenceSet.size + totalRefMembers;
+  const totalCovered = implemented + (totalRefMembers - totalMissingMembers);
+  const combinedCoverage = totalItems ? (totalCovered / totalItems) * 100 : 100;
+  await writeBadgeFile(combinedCoverage);
+  await updateGist(combinedCoverage);
 }
 
 await main();
