@@ -226,7 +226,7 @@ export class QueryController implements Query {
     });
   }
 
-  close(): void {
+  close(error?: unknown): void {
     if (this.#closed) {
       return;
     }
@@ -236,10 +236,20 @@ export class QueryController implements Query {
     }
     for (const { reject, timer } of this.#pendingControls.values()) {
       clearTimeout(timer as number);
-      reject(new CLIConnectionError("Query closed"));
+      if (error instanceof Error) {
+        reject(error);
+      } else {
+        reject(new CLIConnectionError(typeof error === "string" ? error : "Query closed"));
+      }
     }
     this.#pendingControls.clear();
-    this.#queue.close();
+
+    if (error !== undefined) {
+      this.#queue.fail(error);
+    } else {
+      this.#queue.close();
+    }
+
     this.#transport.close();
   }
 
@@ -314,7 +324,7 @@ export class QueryController implements Query {
   }
 
   async throw(error?: unknown): Promise<IteratorResult<SDKMessage>> {
-    this.close();
+    this.close(error);
     return this.#queue.throw(error);
   }
 
@@ -570,21 +580,30 @@ export function query(params: {
   const transport = new SubprocessCLITransport(options);
   const controller = new QueryController({ transport, options });
 
-  controller.setStartupPromise(
-    (async () => {
-      await transport.connect();
-      void controller.start();
-      await controller.initialize();
+  const startupPromise = (async () => {
+    await transport.connect();
+    void controller.start();
+    await controller.initialize();
+  })();
 
-      if (typeof params.prompt === "string") {
-        const message = createUserPromptMessage(params.prompt, options.sessionId ?? "");
-        await controller.sendUserMessage(message);
-        void controller.waitForResultAndEndInput();
-      } else {
-        void controller.streamInput(params.prompt);
-      }
-    })(),
-  );
+  controller.setStartupPromise(startupPromise);
+
+  const sendPrompt = async (): Promise<void> => {
+    await startupPromise;
+
+    if (typeof params.prompt === "string") {
+      const message = createUserPromptMessage(params.prompt, options.sessionId ?? "");
+      await controller.sendUserMessage(message);
+      void controller.waitForResultAndEndInput();
+      return;
+    }
+
+    await controller.streamInput(params.prompt);
+  };
+
+  void sendPrompt().catch((error) => {
+    controller.close(error);
+  });
 
   return controller;
 }

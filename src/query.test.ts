@@ -10,9 +10,94 @@
 
 import { expect, test } from "bun:test";
 import { QueryController, createUserPromptMessage } from "./query.ts";
+import { query } from "./query.ts";
 import { createSdkMcpServer, tool } from "./sdk-tools.ts";
-import type { HookInput, StdoutMessage, Transport } from "./types.ts";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
+import type { HookInput, SpawnedProcess, StdoutMessage, Transport } from "./types.ts";
 import { z } from "zod";
+
+function createPromptFailureProcess(): {
+  process: SpawnedProcess;
+  writes: string[];
+  finish: () => void;
+} {
+  const emitter = new EventEmitter();
+  const stdout = new Readable({ read() {} });
+  const writes: string[] = [];
+  let isInitialized = false;
+  let exitCode: number | null = 0;
+
+  const stdin = {
+    write(chunk: string | Buffer, callback: (error?: Error | null) => void) {
+      const payload = chunk.toString();
+      writes.push(payload);
+      try {
+        const message = JSON.parse(payload);
+
+        if (message.type === "control_request" && message.request?.subtype === "initialize") {
+          const response = {
+            type: "control_response",
+            response: {
+              subtype: "success",
+              request_id: message.request_id,
+              response: {
+                commands: [],
+                agents: [],
+                output_style: "default",
+                available_output_styles: [],
+                models: [],
+                account: {},
+              },
+            },
+          };
+          stdout.push(`${JSON.stringify(response)}\n`);
+          isInitialized = true;
+          callback();
+          return;
+        }
+
+        if (isInitialized) {
+          callback(new Error("prompt write failure"));
+          return;
+        }
+
+        callback();
+      } catch {
+        callback();
+      }
+    },
+    end() {},
+  } as NodeJS.WritableStream;
+
+  const proc: SpawnedProcess = {
+    stdin,
+    stdout,
+    killed: false,
+    get exitCode() {
+      return exitCode;
+    },
+    kill() {
+      exitCode = 0;
+      (proc as { killed: boolean }).killed = true;
+      emitter.emit("exit", exitCode, null);
+      return true;
+    },
+    on: emitter.on.bind(emitter),
+    once: emitter.once.bind(emitter),
+    off: emitter.off.bind(emitter),
+  };
+
+  return {
+    process: proc,
+    writes,
+    finish() {
+      stdout.push(null);
+      exitCode = 0;
+      emitter.emit("exit", exitCode, null);
+    },
+  };
+}
 
 class MockTransport implements Transport {
   writes: string[] = [];
@@ -453,4 +538,24 @@ test("query controller close() rejects pending controls and closes transport", a
   await expect(initializePromise).rejects.toThrow("Query closed");
 
   await startPromise;
+});
+
+test("query() surfaces prompt write failures through iterator errors", async () => {
+  const { process, finish } = createPromptFailureProcess();
+
+  const controller = query({
+    prompt: "test prompt",
+    options: {
+      spawnClaudeCodeProcess: () => process,
+      maxTurns: 1,
+    },
+  });
+
+  await controller.initializationResult();
+
+  await expect(controller.next()).rejects.toThrow(
+    "Failed to write to process stdin: prompt write failure",
+  );
+
+  finish();
 });

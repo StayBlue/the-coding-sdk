@@ -6,7 +6,7 @@ An open source implementation of an SDK.
 
 > [!WARNING]
 >
-> This is currently a WIP, with the SDK being completely untested. Use at your own risk.
+> This SDK is still in early stages and can change. Use at your own risk.
 
 ## License
 

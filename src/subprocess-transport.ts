@@ -11,7 +11,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ChildProcess, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   CLIConnectionError,
   CLIJSONDecodeError,
@@ -24,7 +24,7 @@ const DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024;
 
 export class SubprocessCLITransport implements Transport {
   #options: Options;
-  #process: SpawnedProcess | ChildProcess | null = null;
+  #process: SpawnedProcess | null = null;
   #ready = false;
   #stdinClosed = false;
   #abortController: AbortController;
@@ -54,12 +54,12 @@ export class SubprocessCLITransport implements Transport {
           signal: this.#abortController.signal,
           ...(this.#options.cwd ? { cwd: this.#options.cwd } : {}),
         }) ??
-        spawn(command, args, {
+        (spawn(command, args, {
           env,
           stdio: ["pipe", "pipe", "pipe"],
           signal: this.#abortController.signal,
           ...(this.#options.cwd ? { cwd: this.#options.cwd } : {}),
-        });
+        }) as SpawnedProcess);
 
       this.#attachStderr();
       this.#ready = true;
@@ -105,14 +105,16 @@ export class SubprocessCLITransport implements Transport {
 
   close(): void {
     this.#ready = false;
-    this.endInput();
     this.#abortController.abort();
+    this.endInput();
 
     const proc = this.#process;
     this.#process = null;
     if (!proc) {
       return;
     }
+
+    proc.once("error", () => {});
 
     if ("kill" in proc && typeof proc.kill === "function" && !proc.killed) {
       proc.kill("SIGTERM");
@@ -131,35 +133,42 @@ export class SubprocessCLITransport implements Transport {
     }
 
     let buffer = "";
-    for await (const chunk of stdout) {
-      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      buffer += text;
+    try {
+      for await (const chunk of stdout) {
+        const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        buffer += text;
 
-      if (buffer.length > this.#maxBufferSize) {
-        const error = new CLIJSONDecodeError(
-          "buffer overflow",
-          new Error(`JSON message exceeded maximum buffer size of ${this.#maxBufferSize}`),
-        );
-        this.close();
-        throw error;
-      }
-
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("{")) {
-          continue;
+        if (buffer.length > this.#maxBufferSize) {
+          const error = new CLIJSONDecodeError(
+            "buffer overflow",
+            new Error(`JSON message exceeded maximum buffer size of ${this.#maxBufferSize}`),
+          );
+          this.close();
+          throw error;
         }
 
-        try {
-          const parsed = JSON.parse(trimmed) as StdoutMessage;
-          yield parsed;
-        } catch (error) {
-          throw new CLIJSONDecodeError(trimmed, error);
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith("{")) {
+            continue;
+          }
+
+          try {
+            const parsed = JSON.parse(trimmed) as StdoutMessage;
+            yield parsed;
+          } catch (error) {
+            throw new CLIJSONDecodeError(trimmed, error);
+          }
         }
       }
+    } catch (error) {
+      if (!this.#ready && error instanceof Error && error.name === "AbortError") {
+        return;
+      }
+      throw error;
     }
 
     if (buffer.trim().length > 0) {
@@ -171,6 +180,9 @@ export class SubprocessCLITransport implements Transport {
     }
 
     const exitCode = await waitForExit(this.#process);
+    if (this.#abortController.signal.aborted || !this.#ready) {
+      return;
+    }
     if (exitCode !== 0 && exitCode !== null) {
       throw new ProcessError("Command failed", {
         exitCode,
@@ -236,7 +248,13 @@ export class SubprocessCLITransport implements Transport {
   }
 
   #buildSpawnCommand(cliPath: string): { command: string; args: string[] } {
-    const cliArgs = ["--output-format", "stream-json", "--verbose"];
+    const cliArgs = [
+      "--output-format",
+      "stream-json",
+      "--input-format",
+      "stream-json",
+      "--verbose",
+    ];
 
     if (this.#options.tools) {
       if (Array.isArray(this.#options.tools)) {
@@ -364,7 +382,7 @@ function stripSdkInstances(servers: NonNullable<Options["mcpServers"]>) {
   );
 }
 
-function waitForExit(processLike: SpawnedProcess | ChildProcess | null): Promise<number | null> {
+function waitForExit(processLike: SpawnedProcess | null): Promise<number | null> {
   if (!processLike) {
     return Promise.resolve(0);
   }
