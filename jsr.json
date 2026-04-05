@@ -1,6 +1,6 @@
 {
   "name": "@stayblue/the-coding-sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "exports": {
     ".": "./index.ts",
     "./sdk-tools": "./sdk-tools.ts"
