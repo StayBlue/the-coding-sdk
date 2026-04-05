@@ -7,29 +7,26 @@
     "url": "https://github.com/StayBlue/the-coding-sdk"
   },
   "files": [
-    "index.ts",
-    "sdk-tools.ts",
-    "src/**/*.ts",
     "dist/**/*",
     "LICENSE",
     "README.md"
   ],
   "type": "module",
-  "main": "index.ts",
-  "module": "./index.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/src/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
-      "default": "./index.ts"
+      "default": "./dist/index.js"
     },
     "./sdk-tools": {
       "types": "./dist/src/sdk-tools.d.ts",
-      "default": "./sdk-tools.ts"
+      "default": "./dist/sdk-tools.js"
     },
     "./sdk-tools.js": {
       "types": "./dist/src/sdk-tools.d.ts",
-      "default": "./sdk-tools.ts"
+      "default": "./dist/sdk-tools.js"
     }
   },
   "publishConfig": {
@@ -37,7 +34,9 @@
   },
   "scripts": {
     "build:types": "tsc",
-    "prepublishOnly": "bun run build:types",
+    "build:js": "bun build ./index.ts --outdir ./dist --outfile=index.js --target=node --format=esm --external '@anthropic-ai/sdk' --external '@modelcontextprotocol/sdk' --external 'zod' && bun build ./sdk-tools.ts --outdir ./dist --outfile=sdk-tools.js --target=node --format=esm --external '@anthropic-ai/sdk' --external '@modelcontextprotocol/sdk' --external 'zod'",
+    "build": "bun run build:types && bun run build:js",
+    "prepublishOnly": "bun run build",
     "format": "bunx oxfmt --write .",
     "format:check": "bunx oxfmt --check .",
     "lint": "bunx oxlint --import-plugin src *.ts",
