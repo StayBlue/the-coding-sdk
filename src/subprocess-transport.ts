@@ -232,12 +232,10 @@ export class SubprocessCLITransport implements Transport {
       return this.#options.pathToClaudeCodeExecutable;
     }
 
-    // Prefer PATH resolution (matches Python SDK's shutil.which("claude") first-check).
-    // Node/Bun spawn resolves bare commands via PATH, so we return "claude" as the
-    // primary strategy and only fall through to explicit paths if spawn fails at
-    // connect() time with ENOENT.
+    // Check well-known installation locations first; if none exist on disk, fall back
+    // to bare "claude" and let the OS resolve via PATH at spawn time.
     //
-    // Well-known fallback locations (matches Python SDK's fallback list):
+    // Well-known installation locations (matches Python SDK's fallback list):
     const fallbackLocations = [
       join(homedir(), ".npm-global/bin/claude"),
       "/usr/local/bin/claude",

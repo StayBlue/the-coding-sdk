@@ -150,6 +150,8 @@ export type McpSetServersResult = {
   added: string[];
   removed: string[];
   errors: Record<string, string>;
+  /** SDK MCP servers that failed to connect during this call. */
+  failedServers?: string[];
 };
 
 /** Prompt request shown when the runtime asks the host to choose from options. */
@@ -317,7 +319,7 @@ export type BaseHookInput = {
   session_id: string;
   transcript_path: string;
   cwd: string;
-  permission_mode?: string;
+  permission_mode?: PermissionMode;
   agent_id?: string;
   agent_type?: string;
 };
@@ -1379,6 +1381,8 @@ export type SDKControlInitializeResponse = {
   models: ModelInfo[];
   account: AccountInfo;
   fast_mode_state?: FastModeState;
+  /** SDK MCP servers that failed to connect during initialization. */
+  failedSdkServers?: string[];
 };
 
 /** Detailed token breakdown returned by the context-usage control request. */

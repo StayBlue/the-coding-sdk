@@ -66,7 +66,8 @@ export class McpBridgeTransport implements McpTransport {
         id: message.id,
         result,
       } as JSONRPCMessage);
-    } catch {
+    } catch (error) {
+      this.onerror?.(error instanceof Error ? error : new Error(String(error)));
       this.onmessage?.({
         jsonrpc: "2.0",
         id: message.id,

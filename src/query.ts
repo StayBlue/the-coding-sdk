@@ -100,7 +100,7 @@ export class QueryController implements Query {
   }
 
   async initialize(): Promise<SDKControlInitializeResponse> {
-    await this.#connectSdkMcpBridges();
+    const failedSdkServers = await this.#connectSdkMcpBridges();
 
     const hooks = this.#convertHooks();
     const systemPrompt =
@@ -114,7 +114,7 @@ export class QueryController implements Query {
         ? this.#options.outputFormat.schema
         : undefined;
 
-    const response = await this.#sendControlRequest(
+    const response = await this.#sendControlRequest<SDKControlInitializeResponse>(
       {
         subtype: "initialize",
         sdkMcpServers: [...this.#sdkMcpServers.keys()],
@@ -133,7 +133,10 @@ export class QueryController implements Query {
       60_000,
     );
 
-    this.#initializationResponse = response as unknown as SDKControlInitializeResponse;
+    this.#initializationResponse = {
+      ...response,
+      ...(failedSdkServers.length > 0 ? { failedSdkServers } : {}),
+    };
     return this.#initializationResponse;
   }
 
@@ -187,15 +190,17 @@ export class QueryController implements Query {
 
   async mcpServerStatus(): Promise<McpServerStatus[]> {
     await this.#ready();
-    const response = await this.#sendControlRequest({ subtype: "mcp_status" });
-    return (response.mcpServers as McpServerStatus[] | undefined) ?? [];
+    const response = await this.#sendControlRequest<{ mcpServers?: McpServerStatus[] }>({
+      subtype: "mcp_status",
+    });
+    return response.mcpServers ?? [];
   }
 
   async getContextUsage(): Promise<SDKControlGetContextUsageResponse> {
     await this.#ready();
-    return (await this.#sendControlRequest({
+    return this.#sendControlRequest<SDKControlGetContextUsageResponse>({
       subtype: "get_context_usage",
-    })) as unknown as SDKControlGetContextUsageResponse;
+    });
   }
 
   async setMcpServers(servers: Record<string, McpServerConfig>): Promise<McpSetServersResult> {
@@ -225,6 +230,7 @@ export class QueryController implements Query {
       }
     }
 
+    const failedServers: string[] = [];
     for (const [name, server] of sdkServers) {
       if (oldNames.has(name)) {
         await this.#disconnectSdkMcpServer(name);
@@ -239,6 +245,7 @@ export class QueryController implements Query {
           );
         } catch {
           sdkServers.delete(name);
+          failedServers.push(name);
         }
       }
     }
@@ -248,17 +255,22 @@ export class QueryController implements Query {
       sdkStubs[name] = { type: "sdk", name };
     }
 
-    return (await this.#sendControlRequest({
+    const result = await this.#sendControlRequest<McpSetServersResult>({
       subtype: "mcp_set_servers",
       servers: { ...processServers, ...sdkStubs } as Record<string, McpServerConfig>,
-    })) as unknown as McpSetServersResult;
+    });
+
+    if (failedServers.length > 0) {
+      return { ...result, failedServers };
+    }
+    return result;
   }
 
   async reloadPlugins(): Promise<SDKControlReloadPluginsResponse> {
     await this.#ready();
-    return (await this.#sendControlRequest({
+    return this.#sendControlRequest<SDKControlReloadPluginsResponse>({
       subtype: "reload_plugins",
-    })) as unknown as SDKControlReloadPluginsResponse;
+    });
   }
 
   async accountInfo(): Promise<AccountInfo> {
@@ -270,11 +282,11 @@ export class QueryController implements Query {
     options?: RewindFilesOptions,
   ): Promise<RewindFilesResult> {
     await this.#ready();
-    return (await this.#sendControlRequest({
+    return this.#sendControlRequest<RewindFilesResult>({
       subtype: "rewind_files",
       user_message_id: userMessageId,
       ...(options?.dryRun != null ? { dry_run: options.dryRun } : {}),
-    })) as unknown as RewindFilesResult;
+    });
   }
 
   async reconnectMcpServer(serverName: string): Promise<void> {
@@ -334,20 +346,16 @@ export class QueryController implements Query {
     for (const abortController of this.#inflightControlRequests.values()) {
       abortController.abort();
     }
-    for (const { reject, timer } of this.#pendingControls.values()) {
-      clearTimeout(timer as number);
-      if (error instanceof Error) {
-        reject(error);
-      } else {
-        reject(new CLIConnectionError(typeof error === "string" ? error : "Query closed"));
-      }
-    }
-    this.#pendingControls.clear();
-
     const closeError =
       error instanceof Error
         ? error
         : new CLIConnectionError(typeof error === "string" ? error : "Query closed");
+
+    for (const { reject, timer } of this.#pendingControls.values()) {
+      clearTimeout(timer as number);
+      reject(closeError);
+    }
+    this.#pendingControls.clear();
     for (const { resolve } of this.#pendingMcpResponses.values()) {
       resolve({
         jsonrpc: "2.0",
@@ -493,10 +501,10 @@ export class QueryController implements Query {
     return converted;
   }
 
-  async #sendControlRequest(
+  async #sendControlRequest<T = Record<string, unknown>>(
     request: SDKControlRequestInner,
     timeoutMs = 30_000,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<T> {
     if (this.#closed) {
       throw new CLIConnectionError("Query is closed");
     }
@@ -522,7 +530,7 @@ export class QueryController implements Query {
     });
 
     await this.#transport.write(`${JSON.stringify(message)}\n`);
-    return responsePromise;
+    return responsePromise as Promise<T>;
   }
 
   #handleControlResponse(message: Extract<StdoutMessage, { type: "control_response" }>): void {
@@ -695,19 +703,11 @@ export class QueryController implements Query {
         };
       }
       case "elicitation": {
-        const elicitationRequest: ElicitationRequest = {
-          serverName: request.mcp_server_name,
-          message: request.message,
-          ...(request.mode ? { mode: request.mode } : {}),
-          ...(request.url ? { url: request.url } : {}),
-          ...(request.elicitation_id ? { elicitationId: request.elicitation_id } : {}),
-          ...(request.requested_schema ? { requestedSchema: request.requested_schema } : {}),
-        };
-
         if (this.#options.onElicitation) {
-          return (await this.#options.onElicitation(elicitationRequest, {
-            signal,
-          })) as unknown as Record<string, unknown>;
+          return (await this.#options.onElicitation(
+            this.#buildElicitationRequest(request.mcp_server_name, request),
+            { signal },
+          )) as unknown as Record<string, unknown>;
         }
 
         return { action: "decline" };
@@ -755,7 +755,8 @@ export class QueryController implements Query {
     }
   }
 
-  async #connectSdkMcpBridges(): Promise<void> {
+  async #connectSdkMcpBridges(): Promise<string[]> {
+    const failedServers: string[] = [];
     for (const [name, server] of this.#sdkMcpServers) {
       const instance = server.instance as unknown as Record<string, unknown>;
       if (typeof instance.connect === "function") {
@@ -766,9 +767,11 @@ export class QueryController implements Query {
           );
         } catch {
           this.#sdkMcpServers.delete(name);
+          failedServers.push(name);
         }
       }
     }
+    return failedServers;
   }
 
   async #connectSdkMcpServer(
@@ -781,30 +784,52 @@ export class QueryController implements Query {
       },
       this.#options.onElicitation
         ? async (params) => {
-            const request = {
-              serverName: name,
-              message: String(params.message ?? ""),
-              ...(params.mode ? { mode: params.mode as "form" | "url" } : {}),
-              ...(params.url ? { url: String(params.url) } : {}),
-              ...(params.elicitationId ? { elicitationId: String(params.elicitationId) } : {}),
-              ...(params.requestedSchema
-                ? { requestedSchema: params.requestedSchema as Record<string, unknown> }
-                : {}),
-            };
-            return (await this.#options.onElicitation!(request, {
-              signal: AbortSignal.timeout(30_000),
-            })) as unknown as Record<string, unknown>;
+            return (await this.#options.onElicitation!(
+              this.#buildElicitationRequest(name, params),
+              { signal: AbortSignal.timeout(30_000) },
+            )) as unknown as Record<string, unknown>;
           }
         : undefined,
     );
     this.#sdkMcpBridges.set(name, bridge);
     try {
       await mcpServer.connect(bridge);
-    } catch {
+    } catch (error) {
       this.#sdkMcpBridges.delete(name);
       this.#sdkMcpServers.delete(name);
-      throw new CLIConnectionError(`Failed to connect SDK MCP server: ${name}`);
+      throw new CLIConnectionError(`Failed to connect SDK MCP server: ${name}`, { cause: error });
     }
+  }
+
+  #buildElicitationRequest(
+    serverName: string,
+    params: {
+      message?: unknown;
+      mode?: unknown;
+      url?: unknown;
+      elicitationId?: unknown;
+      elicitation_id?: unknown;
+      requestedSchema?: unknown;
+      requested_schema?: unknown;
+    },
+  ): ElicitationRequest {
+    return {
+      serverName,
+      message: String(params.message ?? ""),
+      ...(params.mode ? { mode: params.mode as "form" | "url" } : {}),
+      ...(params.url ? { url: String(params.url) } : {}),
+      ...((params.elicitationId ?? params.elicitation_id)
+        ? { elicitationId: String(params.elicitationId ?? params.elicitation_id) }
+        : {}),
+      ...((params.requestedSchema ?? params.requested_schema)
+        ? {
+            requestedSchema: (params.requestedSchema ?? params.requested_schema) as Record<
+              string,
+              unknown
+            >,
+          }
+        : {}),
+    };
   }
 
   async #disconnectSdkMcpServer(name: string): Promise<void> {

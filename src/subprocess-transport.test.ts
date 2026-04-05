@@ -224,7 +224,7 @@ test("buildSpawnCommand merges sandbox into JSON settings", async () => {
 test("buildSpawnCommand rejects invalid settings JSON when used with sandbox", async () => {
   const { process: proc } = createMockProcess();
   const transport = new SubprocessCLITransport({
-    settings: '{"broken": ',
+    settings: '{"broken": }',
     sandbox: { enabled: true },
     spawnClaudeCodeProcess: () => proc,
   });
@@ -247,7 +247,7 @@ test("buildSpawnCommand rejects settings file paths when used with sandbox", asy
   );
 });
 
-test("buildSpawnCommand rejects non-object settings JSON when used with sandbox", async () => {
+test("buildSpawnCommand rejects non-object-looking settings string when used with sandbox", async () => {
   const { process: proc } = createMockProcess();
   const transport = new SubprocessCLITransport({
     settings: "[]",
@@ -256,6 +256,6 @@ test("buildSpawnCommand rejects non-object settings JSON when used with sandbox"
   });
 
   await expect(transport.connect()).rejects.toThrow(
-    "Settings JSON must parse to an object when used with sandbox.",
+    "Cannot use both a settings file path and the sandbox option",
   );
 });

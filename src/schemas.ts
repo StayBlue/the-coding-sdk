@@ -12,7 +12,12 @@ function parseWithSchema<T>(schema: z.ZodType<T>, value: unknown): T | undefined
 }
 
 export function parseJsonLine<T>(schema: z.ZodType<T>, raw: string): T | undefined {
-  const parsed: unknown = JSON.parse(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
   return parseWithSchema(schema, parsed);
 }
 
@@ -127,6 +132,7 @@ const zPermissionMode = z.union([
   z.literal("bypassPermissions"),
   z.literal("plan"),
   z.literal("dontAsk"),
+  z.literal("auto"),
 ]);
 
 const zControlRequestInnerSchema = z.discriminatedUnion("subtype", [

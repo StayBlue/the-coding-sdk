@@ -129,13 +129,9 @@ class RuntimeSDKSession implements SDKSession {
   }
 }
 
-function toQuerySessionOptions(options: SDKSessionOptions): SessionClassOptions {
-  return { ...options };
-}
-
 /** Creates a session that can send prompts incrementally and stream responses over time. */
-export function unstable_v2_createSession(_options: SDKSessionOptions): SDKSession {
-  return new RuntimeSDKSession(toQuerySessionOptions(_options));
+export function unstable_v2_createSession(options: SDKSessionOptions): SDKSession {
+  return new RuntimeSDKSession({ ...options });
 }
 
 /** Sends a single prompt in a temporary session and resolves with the terminal result message. */
@@ -160,12 +156,13 @@ export async function unstable_v2_prompt(
 
 /** Resumes an existing Claude Code session by session ID. */
 export function unstable_v2_resumeSession(
-  _sessionId: string,
-  _options: SDKSessionOptions,
+  sessionId: string,
+  options: SDKSessionOptions,
 ): SDKSession {
   return new RuntimeSDKSession({
-    ...toQuerySessionOptions(_options),
-    resume: _sessionId,
+    ...options,
+    resume: sessionId,
+    sessionId,
   });
 }
 
@@ -482,14 +479,12 @@ function readSessionInfo(filePath: string, sessionId: string): SDKSessionInfo | 
     return undefined;
   }
 
+  const lastField = (key: string) =>
+    extractLastJsonStringField(lite.tail, key) || extractLastJsonStringField(lite.head, key);
+
   const firstPrompt = extractFirstPromptFromHead(lite.head);
   const summary =
-    extractLastJsonStringField(lite.tail, "customTitle") ||
-    extractLastJsonStringField(lite.tail, "aiTitle") ||
-    extractLastJsonStringField(lite.head, "customTitle") ||
-    extractLastJsonStringField(lite.head, "aiTitle") ||
-    firstPrompt ||
-    basename(filePath, ".jsonl");
+    lastField("customTitle") || lastField("aiTitle") || firstPrompt || basename(filePath, ".jsonl");
 
   if (!summary) {
     return undefined;
@@ -500,28 +495,11 @@ function readSessionInfo(filePath: string, sessionId: string): SDKSessionInfo | 
     summary,
     lastModified: lite.mtime,
     fileSize: lite.size,
-    ...optionalProperty(
-      "customTitle",
-      extractLastJsonStringField(lite.tail, "customTitle") ||
-        extractLastJsonStringField(lite.head, "customTitle"),
-    ),
+    ...optionalProperty("customTitle", lastField("customTitle")),
     ...optionalProperty("firstPrompt", firstPrompt),
-    ...optionalProperty(
-      "gitBranch",
-      extractLastJsonStringField(lite.tail, "gitBranch") ||
-        extractLastJsonStringField(lite.head, "gitBranch"),
-    ),
-    ...optionalProperty(
-      "cwd",
-      extractLastJsonStringField(lite.tail, "cwd") || extractLastJsonStringField(lite.head, "cwd"),
-    ),
-    ...optionalProperty(
-      "tag",
-      normalizeOptionalTag(
-        extractLastJsonStringField(lite.tail, "tag") ||
-          extractLastJsonStringField(lite.head, "tag"),
-      ),
-    ),
+    ...optionalProperty("gitBranch", lastField("gitBranch")),
+    ...optionalProperty("cwd", lastField("cwd")),
+    ...optionalProperty("tag", normalizeOptionalTag(lastField("tag"))),
     ...optionalProperty(
       "createdAt",
       parseTimestampToEpoch(extractJsonStringField(lite.head, "timestamp")),
