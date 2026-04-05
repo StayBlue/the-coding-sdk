@@ -4,30 +4,32 @@
   "license": "Apache-2.0",
   "type": "module",
   "module": "./index.ts",
-  "types": "./sdk.d.ts",
+  "types": "./dist/src/index.d.ts",
   "exports": {
     ".": {
-      "types": "./sdk.d.ts",
+      "types": "./dist/src/index.d.ts",
       "default": "./index.ts"
     },
     "./sdk-tools": {
-      "types": "./sdk-tools.d.ts",
+      "types": "./dist/src/sdk-tools.d.ts",
       "default": "./sdk-tools.ts"
     },
     "./sdk-tools.js": {
-      "types": "./sdk-tools.d.ts",
+      "types": "./dist/src/sdk-tools.d.ts",
       "default": "./sdk-tools.ts"
     }
   },
   "scripts": {
+    "build:types": "tsc",
     "format": "bunx oxfmt --write .",
     "format:check": "bunx oxfmt --check .",
     "lint": "bunx oxlint --import-plugin src *.ts",
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "api-surface:check": "bun run scripts/api-surface-check.mjs"
+    "api-surface:check": "bun run build:types && bun run scripts/api-surface-check.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.82.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.3.6"
   },

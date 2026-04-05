@@ -27,7 +27,7 @@ function joinPath(...parts) {
     .replace(/\/+/g, "/");
 }
 
-const LOCAL_DECL_FILES = (process.env.API_SURFACE_LOCAL_DECLS ?? "sdk.d.ts,sdk-tools.d.ts")
+const LOCAL_DECL_FILES = (process.env.API_SURFACE_LOCAL_DECLS ?? "dist/src/index.d.ts")
   .split(",")
   .map((file) => file.trim())
   .filter(Boolean);

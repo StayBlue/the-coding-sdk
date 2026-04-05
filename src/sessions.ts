@@ -73,7 +73,7 @@ class RuntimeSDKSession implements SDKSession {
 
     const startup = (async () => {
       await transport.connect();
-      void controller.start();
+      controller.start().catch(() => {});
       await controller.initialize();
     })();
     controller.setStartupPromise(startup);

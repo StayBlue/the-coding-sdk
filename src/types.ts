@@ -13,10 +13,104 @@ import type {
   JSONRPCMessage,
   ToolAnnotations,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { BetaUsage } from "@anthropic-ai/sdk/resources/beta/messages/messages";
+import type { BetaRawMessageStreamEvent } from "@anthropic-ai/sdk/resources/beta/messages";
+import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
 import type { ZodRawShape } from "zod";
 import type { HOOK_EVENTS } from "./public-constants.ts";
 
 export type UUID = string;
+
+export type OutputFormatType = "json_schema";
+
+export type BaseOutputFormat = {
+  type: OutputFormatType;
+};
+
+export type ConfigScope = "local" | "user" | "project";
+
+export type FastModeState = "off" | "cooldown" | "on";
+
+export type SDKAssistantMessageError =
+  | "authentication_failed"
+  | "billing_error"
+  | "rate_limit"
+  | "invalid_request"
+  | "server_error"
+  | "unknown"
+  | "max_output_tokens";
+
+export type SDKStatus = "compacting" | null;
+
+export type TerminalReason =
+  | "blocking_limit"
+  | "rapid_refill_breaker"
+  | "prompt_too_long"
+  | "image_error"
+  | "model_error"
+  | "aborted_streaming"
+  | "aborted_tools"
+  | "stop_hook_prevented"
+  | "hook_stopped"
+  | "tool_deferred"
+  | "max_turns"
+  | "completed";
+
+export type ModelUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  webSearchRequests: number;
+  costUSD: number;
+  contextWindow: number;
+  maxOutputTokens: number;
+};
+
+export type NonNullableUsage = {
+  [K in keyof BetaUsage]: NonNullable<BetaUsage[K]>;
+};
+
+export type SDKRateLimitInfo = {
+  status: "allowed" | "allowed_warning" | "rejected";
+  resetsAt?: number;
+  rateLimitType?: "five_hour" | "seven_day" | "seven_day_opus" | "seven_day_sonnet" | "overage";
+  utilization?: number;
+  overageStatus?: "allowed" | "allowed_warning" | "rejected";
+  overageResetsAt?: number;
+  overageDisabledReason?:
+    | "overage_not_provisioned"
+    | "org_level_disabled"
+    | "org_level_disabled_until"
+    | "out_of_credits"
+    | "seat_tier_level_disabled"
+    | "member_level_disabled"
+    | "seat_tier_zero_credit_limit"
+    | "group_zero_credit_limit"
+    | "member_zero_credit_limit"
+    | "org_service_level_disabled"
+    | "org_service_zero_credit_limit"
+    | "no_limits_configured"
+    | "unknown";
+  isUsingOverage?: boolean;
+  surpassedThreshold?: number;
+};
+
+export type SDKPermissionDenial = {
+  tool_name: string;
+  tool_use_id: string;
+  tool_input: Record<string, unknown>;
+};
+
+export type SDKDeferredToolUse = {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+};
+
+export type McpServerStatusConfig =
+  | McpServerConfigForProcessTransport
+  | McpClaudeAIProxyServerConfig;
 
 export type AnyZodRawShape = ZodRawShape;
 
@@ -737,12 +831,11 @@ export type SDKBaseMessage = {
   type: string;
   uuid?: UUID;
   session_id?: string;
-  [key: string]: unknown;
 };
 
 export type SDKUserMessage = SDKBaseMessage & {
   type: "user";
-  message: Record<string, unknown>;
+  message: MessageParam;
   parent_tool_use_id: string | null;
   isSynthetic?: boolean;
   tool_use_result?: unknown;
@@ -754,30 +847,10 @@ export type SDKAssistantMessage = SDKBaseMessage & {
   type: "assistant";
   message: Record<string, unknown>;
   parent_tool_use_id?: string | null;
-  error?: unknown;
+  error?: SDKAssistantMessageError;
 };
 
-export type SDKResultMessage = SDKBaseMessage & {
-  type: "result";
-  subtype:
-    | "success"
-    | "error_during_execution"
-    | "error_max_turns"
-    | "error_max_budget_usd"
-    | "error_max_structured_output_retries";
-  duration_ms: number;
-  duration_api_ms: number;
-  is_error: boolean;
-  num_turns: number;
-  stop_reason?: string | null;
-  total_cost_usd?: number;
-  usage?: Record<string, unknown>;
-  modelUsage?: Record<string, unknown>;
-  permission_denials?: Array<Record<string, unknown>>;
-  errors?: string[];
-  result?: string;
-  structured_output?: unknown;
-};
+export type SDKResultMessage = SDKResultSuccess | SDKResultError;
 
 export type SDKSystemMessage = SDKBaseMessage & {
   type: "system";
@@ -786,13 +859,13 @@ export type SDKSystemMessage = SDKBaseMessage & {
 
 export type SDKPartialAssistantMessage = SDKBaseMessage & {
   type: "stream_event";
-  event: unknown;
+  event: BetaRawMessageStreamEvent;
   parent_tool_use_id: string | null;
 };
 
 export type SDKRateLimitEvent = SDKBaseMessage & {
   type: "rate_limit_event";
-  rate_limit_info: Record<string, unknown>;
+  rate_limit_info: SDKRateLimitInfo;
 };
 
 export type SDKToolProgressMessage = SDKBaseMessage & {
@@ -815,16 +888,241 @@ export type SDKPromptSuggestionMessage = SDKBaseMessage & {
   suggestion: string;
 };
 
+export type SDKUserMessageReplay = SDKBaseMessage & {
+  type: "user";
+  message: MessageParam;
+  parent_tool_use_id: string | null;
+  isSynthetic?: boolean;
+  tool_use_result?: unknown;
+  priority?: "now" | "next" | "later";
+  timestamp?: string;
+  uuid: UUID;
+  session_id: string;
+  isReplay: true;
+  file_attachments?: unknown[];
+};
+
+export type SDKResultSuccess = {
+  type: "result";
+  subtype: "success";
+  duration_ms: number;
+  duration_api_ms: number;
+  is_error: boolean;
+  num_turns: number;
+  result: string;
+  stop_reason: string | null;
+  total_cost_usd: number;
+  usage: NonNullableUsage;
+  modelUsage: Record<string, ModelUsage>;
+  permission_denials: SDKPermissionDenial[];
+  structured_output?: unknown;
+  deferred_tool_use?: SDKDeferredToolUse;
+  terminal_reason?: TerminalReason;
+  fast_mode_state?: FastModeState;
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKResultError = {
+  type: "result";
+  subtype:
+    | "error_during_execution"
+    | "error_max_turns"
+    | "error_max_budget_usd"
+    | "error_max_structured_output_retries";
+  duration_ms: number;
+  duration_api_ms: number;
+  is_error: boolean;
+  num_turns: number;
+  stop_reason: string | null;
+  total_cost_usd: number;
+  usage: NonNullableUsage;
+  modelUsage: Record<string, ModelUsage>;
+  permission_denials: SDKPermissionDenial[];
+  errors: string[];
+  terminal_reason?: TerminalReason;
+  fast_mode_state?: FastModeState;
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKAPIRetryMessage = {
+  type: "system";
+  subtype: "api_retry";
+  attempt: number;
+  max_retries: number;
+  retry_delay_ms: number;
+  error_status: number | null;
+  error: SDKAssistantMessageError;
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKCompactBoundaryMessage = {
+  type: "system";
+  subtype: "compact_boundary";
+  compact_metadata: {
+    summary: string;
+    turn_count: number;
+  };
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKElicitationCompleteMessage = {
+  type: "system";
+  subtype: "elicitation_complete";
+  mcp_server_name: string;
+  elicitation_id: string;
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKFilesPersistedEvent = {
+  type: "system";
+  subtype: "files_persisted";
+  files: Array<{
+    filename: string;
+    file_id: string;
+  }>;
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKHookStartedMessage = {
+  type: "system";
+  subtype: "hook_started";
+  hook_id: string;
+  hook_name: string;
+  hook_event: string;
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKHookProgressMessage = {
+  type: "system";
+  subtype: "hook_progress";
+  hook_id: string;
+  hook_name: string;
+  hook_event: string;
+  stdout: string;
+  stderr: string;
+  output: string;
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKHookResponseMessage = {
+  type: "system";
+  subtype: "hook_response";
+  hook_id: string;
+  hook_name: string;
+  hook_event: string;
+  output: string;
+  stdout: string;
+  stderr: string;
+  exit_code?: number;
+  outcome: "success" | "error" | "cancelled";
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKLocalCommandOutputMessage = {
+  type: "system";
+  subtype: "local_command_output";
+  content: string;
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKSessionStateChangedMessage = {
+  type: "system";
+  subtype: "session_state_changed";
+  state: "idle" | "running" | "requires_action";
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKStatusMessage = {
+  type: "system";
+  subtype: "status";
+  status: SDKStatus;
+  permissionMode?: PermissionMode;
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKTaskNotificationMessage = {
+  type: "system";
+  subtype: "task_notification";
+  task_id: string;
+  tool_use_id?: string;
+  status: "completed" | "failed" | "stopped";
+  output_file: string;
+  summary: string;
+  usage?: {
+    total_tokens: number;
+    tool_uses: number;
+    duration_ms: number;
+  };
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKTaskProgressMessage = {
+  type: "system";
+  subtype: "task_progress";
+  task_id: string;
+  tool_use_id?: string;
+  description: string;
+  usage: {
+    total_tokens: number;
+    tool_uses: number;
+    duration_ms: number;
+  };
+  last_tool_name?: string;
+  summary?: string;
+  uuid: UUID;
+  session_id: string;
+};
+
+export type SDKTaskStartedMessage = {
+  type: "system";
+  subtype: "task_started";
+  task_id: string;
+  tool_use_id?: string;
+  description: string;
+  task_type?: string;
+  workflow_name?: string;
+  prompt?: string;
+  uuid: UUID;
+  session_id: string;
+};
+
 export type SDKMessage =
   | SDKUserMessage
+  | SDKUserMessageReplay
   | SDKAssistantMessage
   | SDKResultMessage
   | SDKSystemMessage
   | SDKPartialAssistantMessage
+  | SDKCompactBoundaryMessage
+  | SDKStatusMessage
+  | SDKAPIRetryMessage
+  | SDKLocalCommandOutputMessage
+  | SDKHookStartedMessage
+  | SDKHookProgressMessage
+  | SDKHookResponseMessage
   | SDKRateLimitEvent
   | SDKToolProgressMessage
   | SDKToolUseSummaryMessage
-  | SDKPromptSuggestionMessage;
+  | SDKPromptSuggestionMessage
+  | SDKTaskNotificationMessage
+  | SDKTaskStartedMessage
+  | SDKTaskProgressMessage
+  | SDKSessionStateChangedMessage
+  | SDKFilesPersistedEvent
+  | SDKElicitationCompleteMessage;
 
 export type SDKControlInitializeResponse = {
   commands: SlashCommand[];
@@ -833,7 +1131,7 @@ export type SDKControlInitializeResponse = {
   available_output_styles: string[];
   models: ModelInfo[];
   account: AccountInfo;
-  fast_mode_state?: "off" | "cooldown" | "on";
+  fast_mode_state?: FastModeState;
 };
 
 export type SDKControlGetContextUsageResponse = {

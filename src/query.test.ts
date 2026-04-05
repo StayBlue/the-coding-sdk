@@ -448,7 +448,7 @@ test("query controller yields known stream messages and skips unknown message ty
     uuid: "evt-2",
     session_id: "session-1",
     rate_limit_info: {
-      status: "ok",
+      status: "allowed",
     },
   } as StdoutMessage);
   transport.finish();
