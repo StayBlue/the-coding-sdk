@@ -197,3 +197,65 @@ test("close kills the process", async () => {
   expect(proc.killed).toBe(true);
   expect(transport.isReady()).toBe(false);
 });
+
+test("buildSpawnCommand merges sandbox into JSON settings", async () => {
+  let capturedArgs: string[] = [];
+
+  const { process: proc } = createMockProcess();
+  const transport = new SubprocessCLITransport({
+    settings: { theme: "dark" },
+    sandbox: { enabled: true },
+    spawnClaudeCodeProcess: (opts) => {
+      capturedArgs = opts.args;
+      return proc;
+    },
+  });
+  await transport.connect();
+
+  const settingsIndex = capturedArgs.indexOf("--settings");
+  expect(settingsIndex).toBeGreaterThanOrEqual(0);
+  const settingsValue = capturedArgs[settingsIndex + 1];
+  expect(JSON.parse(settingsValue!)).toEqual({
+    theme: "dark",
+    sandbox: { enabled: true },
+  });
+});
+
+test("buildSpawnCommand rejects invalid settings JSON when used with sandbox", async () => {
+  const { process: proc } = createMockProcess();
+  const transport = new SubprocessCLITransport({
+    settings: '{"broken": ',
+    sandbox: { enabled: true },
+    spawnClaudeCodeProcess: () => proc,
+  });
+
+  await expect(transport.connect()).rejects.toThrow(
+    "Failed to parse settings JSON when used with sandbox",
+  );
+});
+
+test("buildSpawnCommand rejects settings file paths when used with sandbox", async () => {
+  const { process: proc } = createMockProcess();
+  const transport = new SubprocessCLITransport({
+    settings: "/tmp/settings.json",
+    sandbox: { enabled: true },
+    spawnClaudeCodeProcess: () => proc,
+  });
+
+  await expect(transport.connect()).rejects.toThrow(
+    "Cannot use both a settings file path and the sandbox option",
+  );
+});
+
+test("buildSpawnCommand rejects non-object settings JSON when used with sandbox", async () => {
+  const { process: proc } = createMockProcess();
+  const transport = new SubprocessCLITransport({
+    settings: "[]",
+    sandbox: { enabled: true },
+    spawnClaudeCodeProcess: () => proc,
+  });
+
+  await expect(transport.connect()).rejects.toThrow(
+    "Settings JSON must parse to an object when used with sandbox.",
+  );
+});

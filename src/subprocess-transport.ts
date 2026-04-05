@@ -282,6 +282,12 @@ export class SubprocessCLITransport implements Transport {
           cliArgs.push("--thinking", "adaptive");
           break;
       }
+    } else if (this.#options.maxThinkingTokens != null) {
+      if (this.#options.maxThinkingTokens === 0) {
+        cliArgs.push("--thinking", "disabled");
+      } else {
+        cliArgs.push("--max-thinking-tokens", String(this.#options.maxThinkingTokens));
+      }
     }
     if (this.#options.effort) {
       cliArgs.push("--effort", this.#options.effort);
@@ -356,16 +362,18 @@ export class SubprocessCLITransport implements Transport {
     if (this.#options.allowDangerouslySkipPermissions) {
       cliArgs.push("--allow-dangerously-skip-permissions");
     }
+    if (this.#options.includeHookEvents) {
+      cliArgs.push("--include-hook-events");
+    }
     if (this.#options.includePartialMessages) {
       cliArgs.push("--include-partial-messages");
     }
-    if (this.#options.settings) {
-      cliArgs.push(
-        "--settings",
-        typeof this.#options.settings === "string"
-          ? this.#options.settings
-          : JSON.stringify(this.#options.settings),
-      );
+    if (this.#options.persistSession === false) {
+      cliArgs.push("--no-session-persistence");
+    }
+    const settings = this.#buildSettingsValue();
+    if (settings) {
+      cliArgs.push("--settings", settings);
     }
     if (this.#options.additionalDirectories?.length) {
       for (const directory of this.#options.additionalDirectories) {
@@ -407,6 +415,50 @@ export class SubprocessCLITransport implements Transport {
       command: this.#options.executable,
       args: [...(this.#options.executableArgs ?? []), cliPath, ...cliArgs],
     };
+  }
+
+  #buildSettingsValue(): string | undefined {
+    const hasSettings = this.#options.settings != null;
+    const hasSandbox = this.#options.sandbox != null;
+
+    if (!hasSettings && !hasSandbox) {
+      return undefined;
+    }
+
+    if (hasSettings && !hasSandbox) {
+      return typeof this.#options.settings === "string"
+        ? this.#options.settings
+        : JSON.stringify(this.#options.settings);
+    }
+
+    const settingsObject: Record<string, unknown> = {};
+    if (hasSettings) {
+      if (typeof this.#options.settings === "string") {
+        const trimmed = this.#options.settings.trim();
+        if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+          throw new Error(
+            "Cannot use both a settings file path and the sandbox option. Include the sandbox configuration in your settings file instead.",
+          );
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed) as unknown;
+        } catch (error) {
+          throw new Error(
+            `Failed to parse settings JSON when used with sandbox: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          throw new Error("Settings JSON must parse to an object when used with sandbox.");
+        }
+        Object.assign(settingsObject, parsed);
+      } else {
+        Object.assign(settingsObject, this.#options.settings);
+      }
+    }
+
+    settingsObject.sandbox = this.#options.sandbox;
+    return JSON.stringify(settingsObject);
   }
 }
 

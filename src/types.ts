@@ -852,6 +852,9 @@ export type Options = {
   includePartialMessages?: boolean;
   thinking?: ThinkingConfig;
   effort?: EffortLevel;
+  /**
+   * @deprecated Use `thinking` instead. `0` is treated as disabled.
+   */
   maxThinkingTokens?: number;
   maxTurns?: number;
   maxBudgetUsd?: number;
@@ -1469,6 +1472,9 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   interrupt(): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setModel(model?: string): Promise<void>;
+  /**
+   * @deprecated Use the `thinking` option in `query()` instead.
+   */
   setMaxThinkingTokens(maxThinkingTokens: number | null): Promise<void>;
   applyFlagSettings(settings: Settings): Promise<void>;
   initializationResult(): Promise<SDKControlInitializeResponse>;
