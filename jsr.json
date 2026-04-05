@@ -1,6 +1,19 @@
 {
   "name": "@stayblue/the-coding-sdk",
   "version": "0.3.0",
+  "publish": {
+    "exclude": [
+      ".github",
+      "scripts",
+      ".oxfmtrc.json",
+      ".oxlintrc.json",
+      "AGENTS.md",
+      "CLAUDE.md",
+      "bun.lock",
+      "package.json",
+      "tsconfig.json"
+    ]
+  },
   "exports": {
     ".": "./index.ts",
     "./sdk-tools": "./sdk-tools.ts"
