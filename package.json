@@ -42,7 +42,8 @@
     "lint": "bunx oxlint --import-plugin src *.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "api-surface:check": "bun run build:types && bun run scripts/api-surface-check.mjs"
+    "api-surface:check": "bun run build:types && bun run scripts/api-surface-check.mjs",
+    "docs:check": "bun run scripts/docs-coverage.mjs --fail-below 90"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
