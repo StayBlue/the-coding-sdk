@@ -31,7 +31,7 @@ jobs:
         env:
           API_SURFACE_PACKAGE: "@anthropic-ai/claude-agent-sdk"
           API_SURFACE_VERSION: "0.2.92"
-          API_SURFACE_BADGE_LABEL: "API Surface Coverage"
+          API_SURFACE_BADGE_LABEL: "api surface"
           API_SURFACE_BADGE_PATH: "api-surface-badge.json"
           API_SURFACE_GIST_ID: ${{ secrets.API_SURFACE_GIST_ID }}
           API_SURFACE_GIST_TOKEN: ${{ secrets.API_SURFACE_GIST_TOKEN }}

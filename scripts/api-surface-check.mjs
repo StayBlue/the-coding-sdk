@@ -41,6 +41,7 @@ const REFERENCE_DECL_FILES = (
   .filter(Boolean);
 const BADGE_PATH = process.env.API_SURFACE_BADGE_PATH;
 const BADGE_LABEL = process.env.API_SURFACE_BADGE_LABEL ?? "api surface";
+const SDK_PIN_BADGE_LABEL = process.env.API_SURFACE_SDK_PIN_BADGE_LABEL ?? "upstream sdk";
 const GIST_ID = process.env.API_SURFACE_GIST_ID;
 const GIST_TOKEN = process.env.API_SURFACE_GIST_TOKEN;
 const GIST_FILE_NAME = process.env.API_SURFACE_GIST_FILE_NAME ?? "api-surface-badge.json";
@@ -422,7 +423,7 @@ async function writeBadgeFile(coverage) {
   if (!badgeDir || badgeDir === BADGE_PATH) return;
 
   const sdkPinBadgePath = joinPath(badgeDir, SDK_PIN_BADGE_FILE_NAME);
-  const sdkPinPayload = badgePayload("upstream sdk", REFERENCE_VERSION, "blue");
+  const sdkPinPayload = badgePayload(SDK_PIN_BADGE_LABEL, REFERENCE_VERSION, "blue");
   await Bun.write(sdkPinBadgePath, `${JSON.stringify(sdkPinPayload, null, 2)}\n`);
   console.log(`Wrote badge data to ${sdkPinBadgePath}`);
 }
@@ -444,7 +445,11 @@ async function updateGist(coverage) {
         ),
       },
       [SDK_PIN_BADGE_FILE_NAME]: {
-        content: JSON.stringify(badgePayload("upstream sdk", REFERENCE_VERSION, "blue"), null, 2),
+        content: JSON.stringify(
+          badgePayload(SDK_PIN_BADGE_LABEL, REFERENCE_VERSION, "blue"),
+          null,
+          2,
+        ),
       },
     },
   };

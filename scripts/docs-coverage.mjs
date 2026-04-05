@@ -36,7 +36,9 @@ if (!exportsField || typeof exportsField !== "object") {
   throw new Error("jsr.json does not define an exports map");
 }
 
-const rootNames = [...new Set(Object.values(exportsField).map((value) => ts.sys.resolvePath(value)))];
+const rootNames = [
+  ...new Set(Object.values(exportsField).map((value) => ts.sys.resolvePath(value))),
+];
 
 const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
 if (configFile.error) {
@@ -89,7 +91,10 @@ for (const rootName of rootNames) {
       continue;
     }
 
-    const key = getSymbolKey(exportName, ts.SymbolFlags.Alias & symbol.flags ? checker.getAliasedSymbol(symbol) : symbol);
+    const key = getSymbolKey(
+      exportName,
+      ts.SymbolFlags.Alias & symbol.flags ? checker.getAliasedSymbol(symbol) : symbol,
+    );
     if (seen.has(key)) {
       continue;
     }
