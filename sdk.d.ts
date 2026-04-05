@@ -29,13 +29,30 @@ export declare const HOOK_EVENTS: readonly [
   "PreToolUse",
   "PostToolUse",
   "PostToolUseFailure",
+  "Notification",
   "UserPromptSubmit",
+  "SessionStart",
+  "SessionEnd",
   "Stop",
+  "StopFailure",
+  "SubagentStart",
   "SubagentStop",
   "PreCompact",
-  "Notification",
-  "SubagentStart",
+  "PostCompact",
   "PermissionRequest",
+  "PermissionDenied",
+  "Setup",
+  "TeammateIdle",
+  "TaskCreated",
+  "TaskCompleted",
+  "Elicitation",
+  "ElicitationResult",
+  "ConfigChange",
+  "WorktreeCreate",
+  "WorktreeRemove",
+  "InstructionsLoaded",
+  "CwdChanged",
+  "FileChanged",
 ];
 export type UUID = string;
 export type AnyZodRawShape = ZodRawShape;
@@ -118,6 +135,13 @@ export type PermissionResult =
       toolUseID?: string;
       decisionClassification?: PermissionDecisionClassification;
     };
+export type ExitReason =
+  | "clear"
+  | "resume"
+  | "logout"
+  | "prompt_input_exit"
+  | "other"
+  | "bypass_permissions_disabled";
 export type BaseHookInput = {
   session_id: string;
   transcript_path: string;
@@ -125,6 +149,38 @@ export type BaseHookInput = {
   permission_mode?: string;
   agent_id?: string;
   agent_type?: string;
+};
+export type ConfigChangeHookInput = BaseHookInput & {
+  hook_event_name: "ConfigChange";
+  source: "user_settings" | "project_settings" | "local_settings" | "policy_settings" | "skills";
+  file_path?: string;
+};
+export type CwdChangedHookInput = BaseHookInput & {
+  hook_event_name: "CwdChanged";
+  old_cwd: string;
+  new_cwd: string;
+};
+export type ElicitationHookInput = BaseHookInput & {
+  hook_event_name: "Elicitation";
+  mcp_server_name: string;
+  message: string;
+  mode?: "form" | "url";
+  url?: string;
+  elicitation_id?: string;
+  requested_schema?: Record<string, unknown>;
+};
+export type ElicitationResultHookInput = BaseHookInput & {
+  hook_event_name: "ElicitationResult";
+  mcp_server_name: string;
+  elicitation_id?: string;
+  mode?: "form" | "url";
+  action: "accept" | "decline" | "cancel";
+  content?: Record<string, unknown>;
+};
+export type FileChangedHookInput = BaseHookInput & {
+  hook_event_name: "FileChanged";
+  file_path: string;
+  event: "change" | "add" | "unlink";
 };
 export type PreToolUseHookInput = BaseHookInput & {
   hook_event_name: "PreToolUse";
@@ -153,13 +209,36 @@ export type NotificationHookInput = BaseHookInput & {
   title?: string;
   notification_type: string;
 };
+export type PermissionDeniedHookInput = BaseHookInput & {
+  hook_event_name: "PermissionDenied";
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id: string;
+  reason: string;
+};
 export type UserPromptSubmitHookInput = BaseHookInput & {
   hook_event_name: "UserPromptSubmit";
   prompt: string;
 };
+export type SessionStartHookInput = BaseHookInput & {
+  hook_event_name: "SessionStart";
+  source: "startup" | "resume" | "clear" | "compact";
+  agent_type?: string;
+  model?: string;
+};
+export type SessionEndHookInput = BaseHookInput & {
+  hook_event_name: "SessionEnd";
+  reason: ExitReason;
+};
 export type StopHookInput = BaseHookInput & {
   hook_event_name: "Stop";
   stop_hook_active: boolean;
+  last_assistant_message?: string;
+};
+export type StopFailureHookInput = BaseHookInput & {
+  hook_event_name: "StopFailure";
+  error: unknown;
+  error_details?: string;
   last_assistant_message?: string;
 };
 export type SubagentStartHookInput = BaseHookInput & {
@@ -180,23 +259,166 @@ export type PreCompactHookInput = BaseHookInput & {
   trigger: "manual" | "auto";
   custom_instructions: string | null;
 };
+export type PostCompactHookInput = BaseHookInput & {
+  hook_event_name: "PostCompact";
+  trigger: "manual" | "auto";
+  compact_summary: string;
+};
 export type PermissionRequestHookInput = BaseHookInput & {
   hook_event_name: "PermissionRequest";
   tool_name: string;
   tool_input: unknown;
   permission_suggestions?: PermissionUpdate[];
 };
+export type SetupHookInput = BaseHookInput & {
+  hook_event_name: "Setup";
+  trigger: "init" | "maintenance";
+};
+export type TeammateIdleHookInput = BaseHookInput & {
+  hook_event_name: "TeammateIdle";
+  teammate_name: string;
+  team_name: string;
+};
+export type TaskCreatedHookInput = BaseHookInput & {
+  hook_event_name: "TaskCreated";
+  task_id: string;
+  task_subject: string;
+  task_description?: string;
+  teammate_name?: string;
+  team_name?: string;
+};
+export type TaskCompletedHookInput = BaseHookInput & {
+  hook_event_name: "TaskCompleted";
+  task_id: string;
+  task_subject: string;
+  task_description?: string;
+  teammate_name?: string;
+  team_name?: string;
+};
+export type InstructionsLoadedHookInput = BaseHookInput & {
+  hook_event_name: "InstructionsLoaded";
+  file_path: string;
+  memory_type: "User" | "Project" | "Local" | "Managed";
+  load_reason: "session_start" | "nested_traversal" | "path_glob_match" | "include" | "compact";
+  globs?: string[];
+  trigger_file_path?: string;
+  parent_file_path?: string;
+};
+export type WorktreeCreateHookInput = BaseHookInput & {
+  hook_event_name: "WorktreeCreate";
+  name: string;
+};
+export type WorktreeRemoveHookInput = BaseHookInput & {
+  hook_event_name: "WorktreeRemove";
+  worktree_path: string;
+};
+export type HookPermissionDecision = "allow" | "deny" | "ask" | "defer";
+export type PreToolUseHookSpecificOutput = {
+  hookEventName: "PreToolUse";
+  permissionDecision?: HookPermissionDecision;
+  permissionDecisionReason?: string;
+  updatedInput?: Record<string, unknown>;
+  additionalContext?: string;
+};
+export type UserPromptSubmitHookSpecificOutput = {
+  hookEventName: "UserPromptSubmit";
+  additionalContext?: string;
+};
+export type SessionStartHookSpecificOutput = {
+  hookEventName: "SessionStart";
+  additionalContext?: string;
+  initialUserMessage?: string;
+  watchPaths?: string[];
+};
+export type SetupHookSpecificOutput = {
+  hookEventName: "Setup";
+  additionalContext?: string;
+};
+export type SubagentStartHookSpecificOutput = {
+  hookEventName: "SubagentStart";
+  additionalContext?: string;
+};
+export type PostToolUseHookSpecificOutput = {
+  hookEventName: "PostToolUse";
+  additionalContext?: string;
+  updatedMCPToolOutput?: unknown;
+};
+export type PostToolUseFailureHookSpecificOutput = {
+  hookEventName: "PostToolUseFailure";
+  additionalContext?: string;
+};
+export type PermissionDeniedHookSpecificOutput = {
+  hookEventName: "PermissionDenied";
+  retry?: boolean;
+};
+export type NotificationHookSpecificOutput = {
+  hookEventName: "Notification";
+  additionalContext?: string;
+};
+export type PermissionRequestHookSpecificOutput = {
+  hookEventName: "PermissionRequest";
+  decision:
+    | {
+        behavior: "allow";
+        updatedInput?: Record<string, unknown>;
+        updatedPermissions?: PermissionUpdate[];
+      }
+    | {
+        behavior: "deny";
+        message?: string;
+        interrupt?: boolean;
+      };
+};
+export type ElicitationHookSpecificOutput = {
+  hookEventName: "Elicitation";
+  action?: "accept" | "decline" | "cancel";
+  content?: Record<string, unknown>;
+};
+export type ElicitationResultHookSpecificOutput = {
+  hookEventName: "ElicitationResult";
+  action?: "accept" | "decline" | "cancel";
+  content?: Record<string, unknown>;
+};
+export type CwdChangedHookSpecificOutput = {
+  hookEventName: "CwdChanged";
+  watchPaths?: string[];
+};
+export type FileChangedHookSpecificOutput = {
+  hookEventName: "FileChanged";
+  watchPaths?: string[];
+};
+export type WorktreeCreateHookSpecificOutput = {
+  hookEventName: "WorktreeCreate";
+  worktreePath: string;
+};
 export type HookInput =
   | PreToolUseHookInput
   | PostToolUseHookInput
   | PostToolUseFailureHookInput
+  | PermissionDeniedHookInput
+  | ConfigChangeHookInput
+  | CwdChangedHookInput
+  | ElicitationHookInput
+  | ElicitationResultHookInput
+  | FileChangedHookInput
   | UserPromptSubmitHookInput
+  | SessionStartHookInput
+  | SessionEndHookInput
   | StopHookInput
+  | StopFailureHookInput
   | SubagentStopHookInput
   | PreCompactHookInput
-  | NotificationHookInput
+  | PostCompactHookInput
+  | PermissionRequestHookInput
+  | SetupHookInput
+  | TeammateIdleHookInput
+  | TaskCreatedHookInput
+  | TaskCompletedHookInput
+  | InstructionsLoadedHookInput
   | SubagentStartHookInput
-  | PermissionRequestHookInput;
+  | NotificationHookInput
+  | WorktreeCreateHookInput
+  | WorktreeRemoveHookInput;
 export type SyncHookJSONOutput = {
   continue?: boolean;
   suppressOutput?: boolean;
@@ -204,7 +426,22 @@ export type SyncHookJSONOutput = {
   decision?: "approve" | "block";
   systemMessage?: string;
   reason?: string;
-  hookSpecificOutput?: Record<string, unknown>;
+  hookSpecificOutput?:
+    | PreToolUseHookSpecificOutput
+    | UserPromptSubmitHookSpecificOutput
+    | SessionStartHookSpecificOutput
+    | SetupHookSpecificOutput
+    | SubagentStartHookSpecificOutput
+    | PostToolUseHookSpecificOutput
+    | PostToolUseFailureHookSpecificOutput
+    | PermissionDeniedHookSpecificOutput
+    | NotificationHookSpecificOutput
+    | PermissionRequestHookSpecificOutput
+    | ElicitationHookSpecificOutput
+    | ElicitationResultHookSpecificOutput
+    | CwdChangedHookSpecificOutput
+    | FileChangedHookSpecificOutput
+    | WorktreeCreateHookSpecificOutput;
 };
 export type AsyncHookJSONOutput = {
   async: true;
