@@ -44,7 +44,7 @@ This project grew out of a need for an SDK that could be fixed directly, instead
 
 It was built primarily by referencing the official Python SDK and using types from the TypeScript SDK. Where information was missing in either, behavior was derived through reverse-engineering of the TypeScript SDK.
 
-Based on my rudimentary understanding of the Terms of Service, given that this is simply a wrapper around the CLI, there shouldn't be any issues.
+This project is an unofficial wrapper around the CLI. I have not verified its compliance with the Terms of Service, so assess that risk for yourself.
 
 That said, both the official SDK and this SDK still depend on the closed-source CLI. If the problem lives in the CLI itself, it cannot be fixed here.
 
