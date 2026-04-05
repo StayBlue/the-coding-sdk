@@ -1,8 +1,17 @@
 {
   "name": "the-coding-sdk",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "license": "Apache-2.0",
+  "files": [
+    "index.ts",
+    "sdk-tools.ts",
+    "src/**/*.ts",
+    "dist/**/*",
+    "LICENSE",
+    "README.md"
+  ],
   "type": "module",
+  "main": "index.ts",
   "module": "./index.ts",
   "types": "./dist/src/index.d.ts",
   "exports": {
@@ -19,8 +28,12 @@
       "default": "./sdk-tools.ts"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build:types": "tsc",
+    "prepublishOnly": "bun run build:types",
     "format": "bunx oxfmt --write .",
     "format:check": "bunx oxfmt --check .",
     "lint": "bunx oxlint --import-plugin src *.ts",
