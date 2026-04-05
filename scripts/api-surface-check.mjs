@@ -44,12 +44,22 @@ const BADGE_LABEL = process.env.API_SURFACE_BADGE_LABEL ?? "api surface";
 const GIST_ID = process.env.API_SURFACE_GIST_ID;
 const GIST_TOKEN = process.env.API_SURFACE_GIST_TOKEN;
 const GIST_FILE_NAME = process.env.API_SURFACE_GIST_FILE_NAME ?? "api-surface-badge.json";
+const SDK_PIN_BADGE_FILE_NAME = "upstream-sdk-badge.json";
 
 function badgeColor(coverage) {
   if (coverage >= 95) return "brightgreen";
   if (coverage >= 85) return "green";
   if (coverage >= 70) return "yellow";
   return "red";
+}
+
+function badgePayload(label, message, color) {
+  return {
+    schemaVersion: 1,
+    label,
+    message,
+    color,
+  };
 }
 
 function collectExportedMembers(sourceText) {
@@ -403,15 +413,18 @@ async function resolveReferenceDeclPath(basePath) {
 async function writeBadgeFile(coverage) {
   if (!BADGE_PATH) return;
 
-  const payload = {
-    schemaVersion: 1,
-    label: BADGE_LABEL,
-    message: `${coverage.toFixed(2)}%`,
-    color: badgeColor(coverage),
-  };
+  const payload = badgePayload(BADGE_LABEL, `${coverage.toFixed(2)}%`, badgeColor(coverage));
 
   await Bun.write(BADGE_PATH, `${JSON.stringify(payload, null, 2)}\n`);
   console.log(`Wrote badge data to ${BADGE_PATH}`);
+
+  const badgeDir = BADGE_PATH.replace(/\/[^/]+$/, "");
+  if (!badgeDir || badgeDir === BADGE_PATH) return;
+
+  const sdkPinBadgePath = joinPath(badgeDir, SDK_PIN_BADGE_FILE_NAME);
+  const sdkPinPayload = badgePayload("upstream sdk", REFERENCE_VERSION, "blue");
+  await Bun.write(sdkPinBadgePath, `${JSON.stringify(sdkPinPayload, null, 2)}\n`);
+  console.log(`Wrote badge data to ${sdkPinBadgePath}`);
 }
 
 async function updateGist(coverage) {
@@ -425,15 +438,13 @@ async function updateGist(coverage) {
     files: {
       [GIST_FILE_NAME]: {
         content: JSON.stringify(
-          {
-            schemaVersion: 1,
-            label: BADGE_LABEL,
-            message: `${coverage.toFixed(2)}%`,
-            color: badgeColor(coverage),
-          },
+          badgePayload(BADGE_LABEL, `${coverage.toFixed(2)}%`, badgeColor(coverage)),
           null,
           2,
         ),
+      },
+      [SDK_PIN_BADGE_FILE_NAME]: {
+        content: JSON.stringify(badgePayload("upstream sdk", REFERENCE_VERSION, "blue"), null, 2),
       },
     },
   };
@@ -457,8 +468,10 @@ async function updateGist(coverage) {
   }
 
   const result = await response.json();
-  const location = result.files?.[GIST_FILE_NAME]?.raw_url ?? result.url;
-  console.log(`Updated gist badge: ${location}`);
+  const coverageLocation = result.files?.[GIST_FILE_NAME]?.raw_url ?? result.url;
+  const sdkPinLocation = result.files?.[SDK_PIN_BADGE_FILE_NAME]?.raw_url ?? result.url;
+  console.log(`Updated gist badge: ${coverageLocation}`);
+  console.log(`Updated gist badge: ${sdkPinLocation}`);
 }
 
 function checkTypeCompatibility(localFiles, referenceFile, symbolNames) {
