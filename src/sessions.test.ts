@@ -9,7 +9,7 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -20,6 +20,9 @@ import {
   getSubagentMessages,
   listSessions,
   listSubagents,
+  unstable_v2_createSession,
+  unstable_v2_prompt,
+  unstable_v2_resumeSession,
   renameSession,
   tagSession,
 } from "./sessions.ts";
@@ -227,6 +230,157 @@ test("listSubagents and getSubagentMessages work with subagent transcripts", asy
   expect(noAgents).toEqual([]);
 });
 
+test("unstable_v2_prompt returns a result with session id from transport", async () => {
+  const root = await Bun.$`mktemp -d ${join(tmpdir(), "claude-sdk-test-unstable-XXXXXX")}`.text();
+  const claudeRoot = root.trim();
+  tempRoots.push(claudeRoot);
+  const executable = createFakeClaudeExecutable(claudeRoot);
+
+  const result = await unstable_v2_prompt("Please reply with OK", {
+    model: "dummy",
+    pathToClaudeCodeExecutable: executable,
+  });
+
+  expect(result).toEqual(
+    expect.objectContaining({
+      type: "result",
+      session_id: "fake-session-id",
+    }),
+  );
+});
+
+test("unstable_v2_session APIs stream all messages and support resume session id", async () => {
+  const root = await Bun.$`mktemp -d ${join(tmpdir(), "claude-sdk-test-unstable-XXXXXX")}`.text();
+  const claudeRoot = root.trim();
+  tempRoots.push(claudeRoot);
+  const executable = createFakeClaudeExecutable(claudeRoot);
+
+  const created = unstable_v2_createSession({
+    model: "dummy",
+    pathToClaudeCodeExecutable: executable,
+  });
+
+  expect(() => created.sessionId).toThrow("Session has not been initialized yet");
+
+  const eventTypes: string[] = [];
+
+  await created.send("Hello");
+  for await (const message of created.stream()) {
+    eventTypes.push(message.type);
+  }
+
+  expect(eventTypes).toEqual(["system", "assistant", "result"]);
+  expect(created.sessionId).toBe("fake-session-id");
+
+  const resumed = unstable_v2_resumeSession("resume-session-id", {
+    model: "dummy",
+    pathToClaudeCodeExecutable: executable,
+  });
+
+  expect(resumed.sessionId).toBe("resume-session-id");
+  const resumedEventTypes: string[] = [];
+
+  await resumed.send({
+    type: "user",
+    message: { role: "user", content: "Hi" },
+    parent_tool_use_id: null,
+  });
+  for await (const message of resumed.stream()) {
+    resumedEventTypes.push(message.type);
+  }
+
+  expect(resumedEventTypes).toEqual(["system", "assistant", "result"]);
+});
+
 function sanitizePath(value: string): string {
   return value.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+function createFakeClaudeExecutable(claudeRoot: string): string {
+  const executable = join(claudeRoot, "fake-claude.js");
+  writeFileSync(
+    executable,
+    `#!/usr/bin/env node
+"use strict";
+
+const readline = require("node:readline");
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity,
+});
+
+rl.on("line", (line) => {
+  if (!line || !line.trim()) {
+    return;
+  }
+
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return;
+  }
+
+  if (message.type === "control_request" && message.request?.subtype === "initialize") {
+    process.stdout.write(
+      JSON.stringify({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id,
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      }) + "\\n",
+    );
+    return;
+  }
+
+  if (message.type === "user") {
+    const sessionId = message.session_id ? message.session_id : "fake-session-id";
+    process.stdout.write(
+      JSON.stringify({
+        type: "system",
+        uuid: "sys-1",
+        session_id: sessionId,
+        message: {
+          role: "system",
+          content: [{ type: "text", text: "start" }],
+        },
+      }) + "\\n",
+    );
+    process.stdout.write(
+      JSON.stringify({
+        type: "assistant",
+        uuid: "assistant-1",
+        session_id: sessionId,
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "OK" }],
+        },
+      }) + "\\n",
+    );
+    process.stdout.write(
+      JSON.stringify({
+        type: "result",
+        uuid: "result-1",
+        session_id: sessionId,
+      }) + "\\n",
+    );
+    process.exit(0);
+  }
+});
+`,
+    "utf8",
+  );
+
+  chmodSync(executable, 0o755);
+  return executable;
 }

@@ -625,6 +625,27 @@ export type SDKSessionInfo = {
   createdAt?: number;
 };
 
+export interface SDKSession {
+  readonly sessionId: string;
+  send(message: string | SDKUserMessage): Promise<void>;
+  stream(): AsyncGenerator<SDKMessage, void>;
+  close(): void;
+  [Symbol.asyncDispose](): Promise<void>;
+}
+
+export type SDKSessionOptions = {
+  model: string;
+  pathToClaudeCodeExecutable?: string;
+  executable?: "node" | "bun";
+  executableArgs?: string[];
+  env?: Record<string, string | undefined>;
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  canUseTool?: CanUseTool;
+  hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
+  permissionMode?: PermissionMode;
+};
+
 export type SessionMessage = {
   type: "user" | "assistant" | "system";
   uuid: string;

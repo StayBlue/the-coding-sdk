@@ -594,6 +594,27 @@ export type SDKSessionInfo = {
   tag?: string;
   createdAt?: number;
 };
+export interface SDKSession {
+  readonly sessionId: string;
+  send(message: string | SDKUserMessage): Promise<void>;
+  stream(): AsyncGenerator<SDKMessage, void>;
+  close(): void;
+  [Symbol.asyncDispose](): Promise<void>;
+}
+export type SDKSessionOptions = {
+  model: string;
+  pathToClaudeCodeExecutable?: string;
+  executable?: "node" | "bun";
+  executableArgs?: string[];
+  env?: {
+    [envVar: string]: string | undefined;
+  };
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  canUseTool?: CanUseTool;
+  hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
+  permissionMode?: PermissionMode;
+};
 export type SessionMessage = {
   type: "user" | "assistant" | "system";
   uuid: string;
@@ -852,3 +873,12 @@ export declare function forkSession(
   sessionId: string,
   options?: ForkSessionOptions,
 ): Promise<ForkSessionResult>;
+export declare function unstable_v2_createSession(_options: SDKSessionOptions): SDKSession;
+export declare function unstable_v2_prompt(
+  _message: string,
+  _options: SDKSessionOptions,
+): Promise<SDKResultMessage>;
+export declare function unstable_v2_resumeSession(
+  _sessionId: string,
+  _options: SDKSessionOptions,
+): SDKSession;

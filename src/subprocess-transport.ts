@@ -18,6 +18,7 @@ import {
   CLINotFoundError,
   ProcessError,
 } from "./errors.ts";
+import { tryCatchSync } from "./try-catch.ts";
 import type { Options, SpawnedProcess, StdoutMessage, Transport } from "./types.ts";
 
 const DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024;
@@ -105,7 +106,6 @@ export class SubprocessCLITransport implements Transport {
 
   close(): void {
     this.#ready = false;
-    this.#abortController.abort();
     this.endInput();
 
     const proc = this.#process;
@@ -117,10 +117,10 @@ export class SubprocessCLITransport implements Transport {
     proc.once("error", () => {});
 
     if ("kill" in proc && typeof proc.kill === "function" && !proc.killed) {
-      proc.kill("SIGTERM");
+      tryCatchSync(() => proc.kill("SIGTERM"));
       setTimeout(() => {
         if (!proc.killed) {
-          proc.kill("SIGKILL");
+          tryCatchSync(() => proc.kill("SIGKILL"));
         }
       }, 1000).unref?.();
     }

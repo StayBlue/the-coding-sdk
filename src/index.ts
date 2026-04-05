@@ -22,4 +22,7 @@ export {
   tagSession,
   deleteSession,
   forkSession,
+  unstable_v2_createSession,
+  unstable_v2_prompt,
+  unstable_v2_resumeSession,
 } from "./sessions.ts";

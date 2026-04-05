@@ -25,6 +25,8 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { ClaudeSDKError } from "./errors.ts";
+import { QueryController, createUserPromptMessage } from "./query.ts";
+import { SubprocessCLITransport } from "./subprocess-transport.ts";
 import { tryCatchSync } from "./try-catch.ts";
 import type {
   ForkSessionOptions,
@@ -32,9 +34,14 @@ import type {
   GetSessionInfoOptions,
   GetSessionMessagesOptions,
   GetSubagentMessagesOptions as _GetSubagentMessagesOptions,
-  ListSessionsOptions,
   ListSubagentsOptions,
+  ListSessionsOptions,
+  SDKMessage,
+  SDKResultMessage,
+  SDKSession,
+  SDKSessionOptions,
   SDKSessionInfo,
+  SDKUserMessage,
   SessionMessage,
   SessionMutationOptions,
 } from "./types.ts";
@@ -48,6 +55,151 @@ const COMMAND_NAME_RE = /<command-name>(.*?)<\/command-name>/;
 const SANITIZE_RE = /[^a-zA-Z0-9]/g;
 
 type TranscriptEntry = Record<string, unknown>;
+
+type SessionClassOptions = SDKSessionOptions & {
+  sessionId?: string;
+};
+
+class RuntimeSDKSession implements SDKSession {
+  #controller: QueryController;
+  #sessionId: string | undefined;
+  #closed = false;
+
+  constructor(options: SessionClassOptions) {
+    const transport = new SubprocessCLITransport(options);
+    const controller = new QueryController({ transport, options });
+    this.#controller = controller;
+    this.#sessionId = options.sessionId;
+
+    const startup = (async () => {
+      await transport.connect();
+      void controller.start();
+      await controller.initialize();
+    })();
+    controller.setStartupPromise(startup);
+  }
+
+  get sessionId(): string {
+    if (this.#sessionId === undefined) {
+      throw new ClaudeSDKError("Session has not been initialized yet");
+    }
+    return this.#sessionId;
+  }
+
+  async send(message: string | SDKUserMessage): Promise<void> {
+    await this.#controller.initializationResult();
+    if (this.#closed) {
+      throw new ClaudeSDKError("Session is closed");
+    }
+
+    if (typeof message === "string") {
+      await this.#controller.sendUserMessage(
+        createUserPromptMessage(message, this.#sessionId ?? ""),
+      );
+      return;
+    }
+
+    await this.#controller.sendUserMessage({
+      ...message,
+      session_id: (message as { session_id?: string }).session_id ?? this.#sessionId ?? "",
+    });
+  }
+
+  async *stream(): AsyncGenerator<SDKMessage, void> {
+    await this.#controller.initializationResult();
+
+    for await (const message of this.#controller) {
+      if (this.#sessionId === undefined) {
+        const candidate = message as { session_id?: string };
+        if (typeof candidate.session_id === "string" && candidate.session_id.length > 0) {
+          this.#sessionId = candidate.session_id;
+        }
+      }
+      yield message;
+    }
+  }
+
+  close(): void {
+    if (this.#closed) {
+      return;
+    }
+    this.#closed = true;
+    this.#controller.close();
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    this.close();
+  }
+}
+
+function toQuerySessionOptions(options: SDKSessionOptions): SessionClassOptions {
+  const mapped: SessionClassOptions = {
+    model: options.model,
+  };
+
+  if (options.pathToClaudeCodeExecutable != null) {
+    mapped.pathToClaudeCodeExecutable = options.pathToClaudeCodeExecutable;
+  }
+  if (options.executable != null) {
+    mapped.executable = options.executable;
+  }
+  if (options.executableArgs != null) {
+    mapped.executableArgs = options.executableArgs;
+  }
+  if (options.env != null) {
+    mapped.env = options.env;
+  }
+  if (options.allowedTools != null) {
+    mapped.allowedTools = options.allowedTools;
+  }
+  if (options.disallowedTools != null) {
+    mapped.disallowedTools = options.disallowedTools;
+  }
+  if (options.canUseTool != null) {
+    mapped.canUseTool = options.canUseTool;
+  }
+  if (options.hooks != null) {
+    mapped.hooks = options.hooks;
+  }
+  if (options.permissionMode != null) {
+    mapped.permissionMode = options.permissionMode;
+  }
+
+  return mapped;
+}
+
+export function unstable_v2_createSession(_options: SDKSessionOptions): SDKSession {
+  return new RuntimeSDKSession(toQuerySessionOptions(_options));
+}
+
+export async function unstable_v2_prompt(
+  message: string,
+  options: SDKSessionOptions,
+): Promise<SDKResultMessage> {
+  const session = unstable_v2_createSession(options);
+
+  try {
+    await session.send(message);
+    for await (const event of session.stream()) {
+      if (event.type === "result") {
+        return event as SDKResultMessage;
+      }
+    }
+    throw new Error("Session ended without result message");
+  } finally {
+    session.close();
+  }
+}
+
+export function unstable_v2_resumeSession(
+  _sessionId: string,
+  _options: SDKSessionOptions,
+): SDKSession {
+  return new RuntimeSDKSession({
+    ...toQuerySessionOptions(_options),
+    sessionId: _sessionId,
+  });
+}
 
 type LiteSessionFile = {
   mtime: number;
