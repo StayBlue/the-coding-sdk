@@ -266,6 +266,26 @@ export class SubprocessCLITransport implements Transport {
       "--verbose",
     ];
 
+    if (this.#options.thinking) {
+      switch (this.#options.thinking.type) {
+        case "enabled":
+          if (this.#options.thinking.budgetTokens === undefined) {
+            cliArgs.push("--thinking", "adaptive");
+          } else {
+            cliArgs.push("--max-thinking-tokens", String(this.#options.thinking.budgetTokens));
+          }
+          break;
+        case "disabled":
+          cliArgs.push("--thinking", "disabled");
+          break;
+        case "adaptive":
+          cliArgs.push("--thinking", "adaptive");
+          break;
+      }
+    }
+    if (this.#options.effort) {
+      cliArgs.push("--effort", this.#options.effort);
+    }
     if (this.#options.tools) {
       if (Array.isArray(this.#options.tools)) {
         cliArgs.push("--tools", this.#options.tools.join(","));
@@ -330,6 +350,15 @@ export class SubprocessCLITransport implements Transport {
     if (this.#options.strictMcpConfig) {
       cliArgs.push("--strict-mcp-config");
     }
+    if (this.#options.settingSources?.length) {
+      cliArgs.push(`--setting-sources=${this.#options.settingSources.join(",")}`);
+    }
+    if (this.#options.allowDangerouslySkipPermissions) {
+      cliArgs.push("--allow-dangerously-skip-permissions");
+    }
+    if (this.#options.includePartialMessages) {
+      cliArgs.push("--include-partial-messages");
+    }
     if (this.#options.settings) {
       cliArgs.push(
         "--settings",
@@ -341,6 +370,13 @@ export class SubprocessCLITransport implements Transport {
     if (this.#options.additionalDirectories?.length) {
       for (const directory of this.#options.additionalDirectories) {
         cliArgs.push("--add-dir", directory);
+      }
+    }
+    if (this.#options.plugins?.length) {
+      for (const plugin of this.#options.plugins) {
+        if (plugin.type === "local") {
+          cliArgs.push("--plugin-dir", plugin.path);
+        }
       }
     }
     if (this.#options.mcpServers && Object.keys(this.#options.mcpServers).length > 0) {
