@@ -423,7 +423,7 @@ async function writeBadgeFile(coverage) {
   if (!badgeDir || badgeDir === BADGE_PATH) return;
 
   const sdkPinBadgePath = joinPath(badgeDir, SDK_PIN_BADGE_FILE_NAME);
-  const sdkPinPayload = badgePayload(SDK_PIN_BADGE_LABEL, REFERENCE_VERSION, "blue");
+  const sdkPinPayload = badgePayload(SDK_PIN_BADGE_LABEL, REFERENCE_VERSION, "lightgrey");
   await Bun.write(sdkPinBadgePath, `${JSON.stringify(sdkPinPayload, null, 2)}\n`);
   console.log(`Wrote badge data to ${sdkPinBadgePath}`);
 }
@@ -446,7 +446,7 @@ async function updateGist(coverage) {
       },
       [SDK_PIN_BADGE_FILE_NAME]: {
         content: JSON.stringify(
-          badgePayload(SDK_PIN_BADGE_LABEL, REFERENCE_VERSION, "blue"),
+          badgePayload(SDK_PIN_BADGE_LABEL, REFERENCE_VERSION, "lightgrey"),
           null,
           2,
         ),
