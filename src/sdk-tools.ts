@@ -17,13 +17,12 @@ import type {
   SdkMcpServerInstance,
   SdkMcpToolDefinition,
 } from "./types.ts";
-
-type JsonRpcMessage = {
-  jsonrpc?: string;
-  id?: string | number | null | undefined;
-  method?: string | undefined;
-  params?: Record<string, unknown> | undefined;
-};
+import {
+  parseJSONRPCMessage,
+  parseJSONRPCMessageId,
+  type ParsedJSONRPCMessage,
+  zToolsCallParamsSchema,
+} from "./schemas.ts";
 
 export function tool<Schema extends AnyZodRawShape>(
   name: string,
@@ -74,11 +73,16 @@ export function createSdkMcpServer(options: {
 
 export async function dispatchSdkMcpRequest(
   server: SdkMcpServerInstance,
-  message: JsonRpcMessage,
+  message: ParsedJSONRPCMessage | Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const method = message.method;
-  const id = message.id ?? null;
-  const params = message.params ?? {};
+  const parsedMessage = parseJSONRPCMessage(message);
+  if (!parsedMessage) {
+    return methodNotFound(null, "Invalid JSON-RPC message");
+  }
+
+  const method = parsedMessage.method;
+  const id = parseJSONRPCMessageId(parsedMessage.id) ?? null;
+  const params = parsedMessage.params ?? {};
 
   try {
     if (method === "initialize") {
@@ -120,19 +124,23 @@ export async function dispatchSdkMcpRequest(
     }
 
     if (method === "tools/call") {
-      const name = typeof params.name === "string" ? params.name : "";
+      const parsed = zToolsCallParamsSchema.safeParse(params);
+      if (!parsed.success) {
+        return methodNotFound(id, "Invalid tools/call params");
+      }
+
+      const { name, arguments: callArgs } = parsed.data;
       const toolDef = server.tools.find((candidate) => candidate.name === name);
       if (!toolDef) {
         return methodNotFound(id, `Tool '${name}' not found`);
       }
 
-      const rawArgs =
-        params.arguments && typeof params.arguments === "object"
-          ? (params.arguments as Record<string, unknown>)
-          : {};
-      const result = await toolDef.handler(rawArgs as InferShape<typeof toolDef.inputSchema>, {
-        serverName: server.name,
-      });
+      const result = await toolDef.handler(
+        (callArgs ?? {}) as InferShape<typeof toolDef.inputSchema>,
+        {
+          serverName: server.name,
+        },
+      );
 
       return {
         jsonrpc: "2.0",

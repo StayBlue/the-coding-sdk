@@ -14,6 +14,13 @@ import { AsyncQueue } from "./async-queue.ts";
 import { AbortError, CLIConnectionError } from "./errors.ts";
 import { McpBridgeTransport } from "./mcp-bridge-transport.ts";
 import { dispatchSdkMcpRequest } from "./sdk-tools.ts";
+import {
+  parseJSONRPCMessage,
+  type ParsedJSONRPCMessage,
+  parseJSONRPCMessageId,
+  parseRecordUnknown,
+  parseSDKControlRequestInner,
+} from "./schemas.ts";
 import { SubprocessCLITransport } from "./subprocess-transport.ts";
 import type {
   AccountInfo,
@@ -360,21 +367,17 @@ export class QueryController implements Query {
         }
 
         if (message.type === "control_response") {
-          this.#handleControlResponse(
-            message as Extract<StdoutMessage, { type: "control_response" }>,
-          );
+          this.#handleControlResponse(message);
           continue;
         }
 
         if (message.type === "control_request") {
-          this.#handleControlRequest(
-            message as Extract<StdoutMessage, { type: "control_request" }>,
-          );
+          this.#handleControlRequest(message);
           continue;
         }
 
         if (message.type === "control_cancel_request") {
-          const requestId = String((message as { request_id: unknown }).request_id);
+          const requestId = message.request_id;
           this.#inflightControlRequests.get(requestId)?.abort();
           this.#inflightControlRequests.delete(requestId);
           continue;
@@ -521,7 +524,10 @@ export class QueryController implements Query {
 
   #handleControlRequest(message: Extract<StdoutMessage, { type: "control_request" }>): void {
     const requestId = message.request_id;
-    const request = message.request as SDKControlRequestInner;
+    const request = parseSDKControlRequestInner(message.request);
+    if (!request) {
+      throw new CLIConnectionError("Malformed control request payload");
+    }
     const abortController = new AbortController();
     this.#inflightControlRequests.set(requestId, abortController);
 
@@ -600,41 +606,43 @@ export class QueryController implements Query {
       }
       case "mcp_message": {
         const bridge = this.#sdkMcpBridges.get(request.server_name);
-        if (bridge) {
-          let msg = request.message as JSONRPCMessage;
+        const parsedMessage = parseJSONRPCMessage(request.message);
+        if (!parsedMessage) {
+          throw new CLIConnectionError(`Invalid MCP message for server: ${request.server_name}`);
+        }
 
-          if (
-            "method" in msg &&
-            msg.method === "initialize" &&
-            "params" in msg &&
-            msg.params &&
-            typeof msg.params === "object"
-          ) {
-            const params = msg.params as Record<string, unknown>;
-            const caps = (params.capabilities ?? {}) as Record<string, unknown>;
-            if (!caps.elicitation) {
+        if (bridge) {
+          let msg: ParsedJSONRPCMessage = parsedMessage;
+
+          const params = parseRecordUnknown(parsedMessage.params);
+          if (parsedMessage.method === "initialize" && params) {
+            const capabilities = parseRecordUnknown(params.capabilities);
+            if (!capabilities?.elicitation) {
               msg = {
-                ...msg,
+                ...parsedMessage,
                 params: {
                   ...params,
-                  capabilities: { ...caps, elicitation: {} },
+                  capabilities: { ...capabilities, elicitation: {} },
                 },
-              } as JSONRPCMessage;
+              };
             }
           }
 
-          if (("result" in msg || "error" in msg) && "id" in msg && msg.id != null) {
-            const key = `${request.server_name}:${msg.id}`;
+          const rpcMessage = msg as JSONRPCMessage;
+          const msgId = parseJSONRPCMessageId(msg.id);
+
+          if (("result" in msg || "error" in msg) && msgId !== undefined) {
+            const key = `${request.server_name}:${msgId}`;
             const pending = this.#pendingMcpResponses.get(key);
             if (pending) {
-              pending.resolve(msg);
+              pending.resolve(rpcMessage);
               this.#pendingMcpResponses.delete(key);
               return {};
             }
           }
 
-          if ("method" in msg && "id" in msg && msg.id != null) {
-            const key = `${request.server_name}:${msg.id}`;
+          if (typeof msg.method === "string" && msgId !== undefined) {
+            const key = `${request.server_name}:${msgId}`;
             let timer: Timer | number;
             const responsePromise = new Promise<JSONRPCMessage>((resolve, reject) => {
               this.#pendingMcpResponses.set(key, {
@@ -649,12 +657,12 @@ export class QueryController implements Query {
                 }
               }, 30_000);
             });
-            bridge.handleInbound(msg);
+            bridge.handleInbound(rpcMessage);
             const response = await responsePromise;
             return { mcp_response: response };
           }
 
-          bridge.handleInbound(msg);
+          bridge.handleInbound(rpcMessage);
           return {};
         }
 
@@ -663,7 +671,7 @@ export class QueryController implements Query {
           throw new CLIConnectionError(`Unknown SDK MCP server: ${request.server_name}`);
         }
         return {
-          mcp_response: await dispatchSdkMcpRequest(server.instance, request.message),
+          mcp_response: await dispatchSdkMcpRequest(server.instance, parsedMessage),
         };
       }
       case "elicitation": {

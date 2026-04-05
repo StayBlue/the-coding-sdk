@@ -1,5 +1,6 @@
 import type { Transport as McpTransport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { parseMcpElicitationCreateRequest, parseRecordUnknown } from "./schemas.ts";
 
 export type ElicitationHandler = (
   params: Record<string, unknown>,
@@ -24,13 +25,9 @@ export class McpBridgeTransport implements McpTransport {
   async send(message: JSONRPCMessage): Promise<void> {
     if (this.#closed) throw new Error("Transport is closed");
 
-    if (
-      "method" in message &&
-      message.method === "elicitation/create" &&
-      "id" in message &&
-      message.id != null
-    ) {
-      void this.#handleElicitation(message);
+    const elicitationRequest = parseMcpElicitationCreateRequest(message);
+    if (elicitationRequest) {
+      void this.#handleElicitation(elicitationRequest);
       return;
     }
 
@@ -47,9 +44,11 @@ export class McpBridgeTransport implements McpTransport {
     this.onmessage?.(message);
   }
 
-  async #handleElicitation(
-    message: JSONRPCMessage & { id: string | number; params?: unknown },
-  ): Promise<void> {
+  async #handleElicitation(message: {
+    method: "elicitation/create";
+    id: string | number;
+    params?: unknown;
+  }): Promise<void> {
     try {
       if (!this.#onElicitation) {
         this.onmessage?.({
@@ -60,7 +59,7 @@ export class McpBridgeTransport implements McpTransport {
         return;
       }
 
-      const params = (message.params ?? {}) as Record<string, unknown>;
+      const params = parseRecordUnknown(message.params) ?? {};
       const result = await this.#onElicitation(params);
       this.onmessage?.({
         jsonrpc: "2.0",

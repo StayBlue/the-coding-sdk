@@ -28,6 +28,7 @@ import { ClaudeSDKError } from "./errors.ts";
 import { QueryController, createUserPromptMessage } from "./query.ts";
 import { SubprocessCLITransport } from "./subprocess-transport.ts";
 import { tryCatchSync } from "./try-catch.ts";
+import { parseRecordUnknown, parseTranscriptEntry, type TranscriptEntry } from "./schemas.ts";
 import type {
   ForkSessionOptions,
   ForkSessionResult,
@@ -53,8 +54,6 @@ const SKIP_FIRST_PROMPT_RE =
   /^(?:<local-command-stdout>|<session-start-hook>|<tick>|<goal>|\[Request interrupted by user[^\]]*\]|\s*<ide_opened_file>[\s\S]*<\/ide_opened_file>\s*$|\s*<ide_selection>[\s\S]*<\/ide_selection>\s*$)/;
 const COMMAND_NAME_RE = /<command-name>(.*?)<\/command-name>/;
 const SANITIZE_RE = /[^a-zA-Z0-9]/g;
-
-type TranscriptEntry = Record<string, unknown>;
 
 type SessionClassOptions = SDKSessionOptions & {
   sessionId?: string;
@@ -464,15 +463,13 @@ function remapEntryUuids(
 ): string[] {
   const uuidMap = new Map<string, string>();
   for (const entry of entries) {
-    if (typeof entry.uuid === "string") {
-      uuidMap.set(entry.uuid, randomUUID());
-    }
+    uuidMap.set(entry.uuid, randomUUID());
   }
 
   const now = new Date().toISOString();
   return entries.map((entry) => {
-    const oldUuid = typeof entry.uuid === "string" ? entry.uuid : randomUUID();
-    const oldParent = typeof entry.parentUuid === "string" ? entry.parentUuid : undefined;
+    const oldUuid = entry.uuid;
+    const oldParent = entry.parentUuid;
 
     const cloned: TranscriptEntry = {
       ...entry,
@@ -601,14 +598,11 @@ function parseTranscript(content: string): TranscriptEntry[] {
     .filter(Boolean)
     .flatMap((line) => {
       try {
-        const entry = JSON.parse(line) as TranscriptEntry;
-        if (entry && typeof entry === "object" && typeof entry.uuid === "string") {
-          return [entry];
-        }
+        const entry = parseTranscriptEntry(line);
+        return entry ? [entry] : [];
       } catch {
         return [];
       }
-      return [];
     });
 }
 
@@ -622,18 +616,15 @@ function buildConversationChain(entries: TranscriptEntry[]): TranscriptEntry[] {
   const order = new Map<string, number>();
 
   entries.forEach((entry, index) => {
-    if (typeof entry.uuid === "string") {
-      byUuid.set(entry.uuid, entry);
-      order.set(entry.uuid, index);
-    }
-    if (typeof entry.parentUuid === "string") {
+    byUuid.set(entry.uuid, entry);
+    order.set(entry.uuid, index);
+    if (entry.parentUuid) {
       parentUuids.add(entry.parentUuid);
     }
   });
 
   const leaves = entries.filter((entry) => {
-    const uuid = typeof entry.uuid === "string" ? entry.uuid : "";
-    return uuid && !parentUuids.has(uuid);
+    return !parentUuids.has(entry.uuid);
   });
 
   if (leaves.length === 0) {
@@ -654,10 +645,10 @@ function buildConversationChain(entries: TranscriptEntry[]): TranscriptEntry[] {
   const chain: TranscriptEntry[] = [];
   const seen = new Set<string>();
   let current: TranscriptEntry | undefined = bestLeaf;
-  while (current && typeof current.uuid === "string" && !seen.has(current.uuid)) {
+  while (current && !seen.has(current.uuid)) {
     seen.add(current.uuid);
     chain.push(current);
-    current = typeof current.parentUuid === "string" ? byUuid.get(current.parentUuid) : undefined;
+    current = current.parentUuid ? byUuid.get(current.parentUuid) : undefined;
   }
 
   chain.reverse();
@@ -880,20 +871,19 @@ function extractFirstPromptFromHead(head: string): string | undefined {
     }
 
     try {
-      const entry = JSON.parse(line) as TranscriptEntry;
-      const message =
-        entry.message && typeof entry.message === "object"
-          ? (entry.message as Record<string, unknown>)
-          : undefined;
+      const entry = parseTranscriptEntry(line);
+      if (!entry || entry.type !== "user") {
+        continue;
+      }
+      const message = parseRecordUnknown(entry.message);
       const content = message?.content;
       const texts =
         typeof content === "string"
           ? [content]
           : Array.isArray(content)
             ? content
-                .filter((item): item is Record<string, unknown> =>
-                  Boolean(item && typeof item === "object"),
-                )
+                .map((item) => parseRecordUnknown(item))
+                .filter((item): item is Record<string, unknown> => Boolean(item))
                 .filter((item) => item.type === "text" && typeof item.text === "string")
                 .map((item) => String(item.text))
             : [];

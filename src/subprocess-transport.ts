@@ -19,6 +19,7 @@ import {
   ProcessError,
 } from "./errors.ts";
 import { tryCatchSync } from "./try-catch.ts";
+import { parseStdoutMessage } from "./schemas.ts";
 import type { Options, SpawnedProcess, StdoutMessage, Transport } from "./types.ts";
 
 const DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024;
@@ -156,12 +157,16 @@ export class SubprocessCLITransport implements Transport {
             continue;
           }
 
+          let parsed: StdoutMessage | undefined;
           try {
-            const parsed = JSON.parse(trimmed) as StdoutMessage;
-            yield parsed;
+            parsed = parseStdoutMessage(trimmed);
           } catch (error) {
             throw new CLIJSONDecodeError(trimmed, error);
           }
+          if (!parsed) {
+            throw new CLIJSONDecodeError(trimmed, new Error("Invalid stdout message structure"));
+          }
+          yield parsed;
         }
       }
     } catch (error) {
@@ -172,11 +177,16 @@ export class SubprocessCLITransport implements Transport {
     }
 
     if (buffer.trim().length > 0) {
+      let parsed: StdoutMessage | undefined;
       try {
-        yield JSON.parse(buffer) as StdoutMessage;
+        parsed = parseStdoutMessage(buffer);
       } catch (error) {
         throw new CLIJSONDecodeError(buffer, error);
       }
+      if (!parsed) {
+        throw new CLIJSONDecodeError(buffer, new Error("Invalid stdout message structure"));
+      }
+      yield parsed;
     }
 
     const exitCode = await waitForExit(this.#process);
