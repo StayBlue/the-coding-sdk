@@ -863,7 +863,28 @@ export function query(params: {
   prompt: string | AsyncIterable<SDKUserMessage>;
   options?: Options;
 }): Query {
-  const options = params.options ?? {};
+  const baseOptions = params.options ?? {};
+  const options =
+    baseOptions.canUseTool == null
+      ? baseOptions
+      : {
+          ...baseOptions,
+          permissionPromptToolName: "stdio",
+        };
+
+  if (baseOptions.canUseTool != null) {
+    if (typeof params.prompt === "string") {
+      throw new Error(
+        "canUseTool callback requires streaming mode. Please provide prompt as an AsyncIterable instead of a string.",
+      );
+    }
+    if (baseOptions.permissionPromptToolName != null) {
+      throw new Error(
+        "canUseTool callback cannot be used with permissionPromptToolName. Please use one or the other.",
+      );
+    }
+  }
+
   const transport = new SubprocessCLITransport(options);
   const controller = new QueryController({ transport, options });
 
@@ -879,7 +900,7 @@ export function query(params: {
     await startupPromise;
 
     if (typeof params.prompt === "string") {
-      const message = createUserPromptMessage(params.prompt, options.sessionId ?? "");
+      const message = createUserPromptMessage(params.prompt);
       await controller.sendUserMessage(message);
       void controller.waitForResultAndEndInput();
       return;

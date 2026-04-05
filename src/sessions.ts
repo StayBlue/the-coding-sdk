@@ -92,9 +92,7 @@ class RuntimeSDKSession implements SDKSession {
     }
 
     if (typeof message === "string") {
-      await this.#controller.sendUserMessage(
-        createUserPromptMessage(message, this.#sessionId ?? ""),
-      );
+      await this.#controller.sendUserMessage(createUserPromptMessage(message));
       return;
     }
 
@@ -132,39 +130,7 @@ class RuntimeSDKSession implements SDKSession {
 }
 
 function toQuerySessionOptions(options: SDKSessionOptions): SessionClassOptions {
-  const mapped: SessionClassOptions = {
-    model: options.model,
-  };
-
-  if (options.pathToClaudeCodeExecutable != null) {
-    mapped.pathToClaudeCodeExecutable = options.pathToClaudeCodeExecutable;
-  }
-  if (options.executable != null) {
-    mapped.executable = options.executable;
-  }
-  if (options.executableArgs != null) {
-    mapped.executableArgs = options.executableArgs;
-  }
-  if (options.env != null) {
-    mapped.env = options.env;
-  }
-  if (options.allowedTools != null) {
-    mapped.allowedTools = options.allowedTools;
-  }
-  if (options.disallowedTools != null) {
-    mapped.disallowedTools = options.disallowedTools;
-  }
-  if (options.canUseTool != null) {
-    mapped.canUseTool = options.canUseTool;
-  }
-  if (options.hooks != null) {
-    mapped.hooks = options.hooks;
-  }
-  if (options.permissionMode != null) {
-    mapped.permissionMode = options.permissionMode;
-  }
-
-  return mapped;
+  return { ...options };
 }
 
 export function unstable_v2_createSession(_options: SDKSessionOptions): SDKSession {
@@ -196,7 +162,7 @@ export function unstable_v2_resumeSession(
 ): SDKSession {
   return new RuntimeSDKSession({
     ...toQuerySessionOptions(_options),
-    sessionId: _sessionId,
+    resume: _sessionId,
   });
 }
 

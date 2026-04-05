@@ -1361,18 +1361,7 @@ export interface SDKSession {
   [Symbol.asyncDispose](): Promise<void>;
 }
 
-export type SDKSessionOptions = {
-  model: string;
-  pathToClaudeCodeExecutable?: string;
-  executable?: "node" | "bun";
-  executableArgs?: string[];
-  env?: Record<string, string | undefined>;
-  allowedTools?: string[];
-  disallowedTools?: string[];
-  canUseTool?: CanUseTool;
-  hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
-  permissionMode?: PermissionMode;
-};
+export type SDKSessionOptions = Options;
 
 export type SessionMessage = {
   type: "user" | "assistant" | "system";
