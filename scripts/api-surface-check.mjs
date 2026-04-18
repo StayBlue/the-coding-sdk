@@ -31,6 +31,8 @@ const LOCAL_DECL_FILES = (process.env.API_SURFACE_LOCAL_DECLS ?? "dist/src/index
   .split(",")
   .map((file) => file.trim())
   .filter(Boolean);
+const REFERENCE_DECL_PATH = process.env.API_SURFACE_REFERENCE_DECL?.trim() || null;
+const REFERENCE_LABEL = process.env.API_SURFACE_REFERENCE_LABEL?.trim() || "reference";
 const REFERENCE_PACKAGE = process.env.API_SURFACE_PACKAGE ?? "@anthropic-ai/claude-agent-sdk";
 const REFERENCE_VERSION = process.env.API_SURFACE_VERSION ?? "0.2.113";
 const REFERENCE_DECL_FILES = (
@@ -398,6 +400,12 @@ async function ensureFilesExist(files) {
   }
 }
 
+function resolveWorkspacePath(filePath) {
+  return ts.sys.resolvePath(
+    filePath.startsWith("/") ? filePath : joinPath(WORKSPACE_ROOT, filePath),
+  );
+}
+
 function packageDir() {
   const segments = REFERENCE_PACKAGE.split("/");
   return joinPath(WORKSPACE_ROOT, "node_modules", ...segments);
@@ -570,28 +578,37 @@ async function main() {
   const localExports = await collectFromDeclarationFiles(LOCAL_DECL_FILES);
   const localSet = new Set(localExports);
 
-  const referenceBase = packageDir();
-  const referencePackagePath = joinPath(referenceBase, "package.json");
-  if (!(await Bun.file(referencePackagePath).exists())) {
-    throw new Error(
-      `Reference package not installed: ${REFERENCE_PACKAGE}. ` +
-        `Run: bun add --no-save ${REFERENCE_PACKAGE}@${REFERENCE_VERSION}`,
-    );
-  }
+  let referenceDeclPath;
+  let referenceDescription;
+  if (REFERENCE_DECL_PATH) {
+    referenceDeclPath = resolveWorkspacePath(REFERENCE_DECL_PATH);
+    await ensureFilesExist([referenceDeclPath]);
+    referenceDescription = `${REFERENCE_LABEL}: ${REFERENCE_DECL_PATH}`;
+  } else {
+    const referenceBase = packageDir();
+    const referencePackagePath = joinPath(referenceBase, "package.json");
+    if (!(await Bun.file(referencePackagePath).exists())) {
+      throw new Error(
+        `Reference package not installed: ${REFERENCE_PACKAGE}. ` +
+          `Run: bun add --no-save ${REFERENCE_PACKAGE}@${REFERENCE_VERSION}`,
+      );
+    }
 
-  const referencePackageJson = await Bun.file(referencePackagePath).json();
-  if (referencePackageJson.version && referencePackageJson.version !== REFERENCE_VERSION) {
-    console.warn(
-      `Expected ${REFERENCE_PACKAGE}@${REFERENCE_VERSION}, but installed ${REFERENCE_PACKAGE}@${referencePackageJson.version}. ` +
-        "Set API_SURFACE_VERSION to match the installed package.",
-    );
-  }
+    const referencePackageJson = await Bun.file(referencePackagePath).json();
+    if (referencePackageJson.version && referencePackageJson.version !== REFERENCE_VERSION) {
+      console.warn(
+        `Expected ${REFERENCE_PACKAGE}@${REFERENCE_VERSION}, but installed ${REFERENCE_PACKAGE}@${referencePackageJson.version}. ` +
+          "Set API_SURFACE_VERSION to match the installed package.",
+      );
+    }
 
-  const referenceDeclPath = await resolveReferenceDeclPath(referenceBase);
-  if (!referenceDeclPath) {
-    throw new Error(
-      `Could not find reference declaration file in ${referenceBase} from: ${REFERENCE_DECL_FILES.join(", ")}`,
-    );
+    referenceDeclPath = await resolveReferenceDeclPath(referenceBase);
+    if (!referenceDeclPath) {
+      throw new Error(
+        `Could not find reference declaration file in ${referenceBase} from: ${REFERENCE_DECL_FILES.join(", ")}`,
+      );
+    }
+    referenceDescription = `Reference package: ${REFERENCE_PACKAGE}@${REFERENCE_VERSION}`;
   }
 
   const referenceExports = await collectFromDeclarationFiles([referenceDeclPath]);
@@ -643,7 +660,7 @@ async function main() {
   const implemented = compatible;
   const coverage = referenceSet.size ? (implemented / referenceSet.size) * 100 : 100;
 
-  console.log(`Reference package: ${REFERENCE_PACKAGE}@${REFERENCE_VERSION}`);
+  console.log(referenceDescription);
   console.log(`Reference declarations: ${referenceDeclPath}`);
   console.log(`Reference exported symbols: ${referenceSet.size}`);
   console.log(`Local exported symbols: ${localSet.size}`);
