@@ -42,10 +42,8 @@ export class SubprocessCLITransport implements Transport {
     const cliPath = this.#findCli();
 
     const { command, args } = this.#buildSpawnCommand(cliPath);
-    const env = {
-      ...process.env,
-      ...this.#options.env,
-    };
+    const env = this.#options.env ? { ...this.#options.env } : { ...process.env };
+    env.CLAUDE_CODE_ENTRYPOINT ??= "sdk-ts";
 
     try {
       this.#process =
@@ -280,6 +278,9 @@ export class SubprocessCLITransport implements Transport {
           cliArgs.push("--thinking", "adaptive");
           break;
       }
+      if (this.#options.thinking.type !== "disabled" && this.#options.thinking.display) {
+        cliArgs.push("--thinking-display", this.#options.thinking.display);
+      }
     } else if (this.#options.maxThinkingTokens != null) {
       if (this.#options.maxThinkingTokens === 0) {
         cliArgs.push("--thinking", "disabled");
@@ -365,6 +366,9 @@ export class SubprocessCLITransport implements Transport {
     }
     if (this.#options.includePartialMessages) {
       cliArgs.push("--include-partial-messages");
+    }
+    if (this.#options.sessionStore) {
+      cliArgs.push("--session-mirror");
     }
     if (this.#options.persistSession === false) {
       cliArgs.push("--no-session-persistence");

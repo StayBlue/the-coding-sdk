@@ -21,6 +21,7 @@ import {
   unlinkSync,
   writeSync,
   closeSync,
+  rmSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -35,6 +36,7 @@ import type {
   GetSessionInfoOptions,
   GetSessionMessagesOptions,
   GetSubagentMessagesOptions as _GetSubagentMessagesOptions,
+  ImportSessionToStoreOptions,
   ListSubagentsOptions,
   ListSessionsOptions,
   SDKMessage,
@@ -43,11 +45,15 @@ import type {
   SDKSessionOptions,
   SDKSessionInfo,
   SDKUserMessage,
+  SessionKey,
   SessionMessage,
   SessionMutationOptions,
+  SessionStore,
+  SessionStoreEntry,
 } from "./types.ts";
 
 const LITE_READ_BUF_SIZE = 65_536;
+const DEFAULT_IMPORT_BATCH_SIZE = 500;
 const MAX_SANITIZED_LENGTH = 200;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SKIP_FIRST_PROMPT_RE =
@@ -173,8 +179,112 @@ type LiteSessionFile = {
   tail: string;
 };
 
+/** In-memory `SessionStore` implementation for tests and development. */
+export class InMemorySessionStore implements SessionStore {
+  private store = new Map<string, SessionStoreEntry[]>();
+  private mtimes = new Map<string, number>();
+
+  private keyToString(key: SessionKey): string {
+    return `${key.projectKey}\0${key.sessionId}\0${key.subpath ?? ""}`;
+  }
+
+  async append(key: SessionKey, entries: SessionStoreEntry[]): Promise<void> {
+    if (entries.length === 0) {
+      return;
+    }
+
+    const storeKey = this.keyToString(key);
+    const current = this.store.get(storeKey) ?? [];
+    current.push(...cloneEntries(entries));
+    this.store.set(storeKey, current);
+    this.mtimes.set(storeKey, Date.now());
+  }
+
+  async load(key: SessionKey): Promise<SessionStoreEntry[] | null> {
+    const entries = this.store.get(this.keyToString(key));
+    return entries ? cloneEntries(entries) : null;
+  }
+
+  async listSessions(projectKey: string): Promise<Array<{ sessionId: string; mtime: number }>> {
+    const sessions: Array<{ sessionId: string; mtime: number }> = [];
+    for (const [storeKey, entries] of this.store) {
+      const parsed = parseStoreKey(storeKey);
+      if (!parsed || parsed.projectKey !== projectKey || parsed.subpath) {
+        continue;
+      }
+      if (entries.length === 0) {
+        continue;
+      }
+      sessions.push({
+        sessionId: parsed.sessionId,
+        mtime: this.mtimes.get(storeKey) ?? Date.now(),
+      });
+    }
+    return sessions;
+  }
+
+  async delete(key: SessionKey): Promise<void> {
+    if (key.subpath) {
+      const storeKey = this.keyToString(key);
+      this.store.delete(storeKey);
+      this.mtimes.delete(storeKey);
+      return;
+    }
+
+    const prefix = `${key.projectKey}\0${key.sessionId}\0`;
+    for (const storeKey of this.store.keys()) {
+      if (storeKey.startsWith(prefix)) {
+        this.store.delete(storeKey);
+        this.mtimes.delete(storeKey);
+      }
+    }
+  }
+
+  async listSubkeys(key: { projectKey: string; sessionId: string }): Promise<string[]> {
+    const prefix = `${key.projectKey}\0${key.sessionId}\0`;
+    const subkeys: string[] = [];
+    for (const storeKey of this.store.keys()) {
+      if (!storeKey.startsWith(prefix)) {
+        continue;
+      }
+      const parsed = parseStoreKey(storeKey);
+      if (parsed?.subpath) {
+        subkeys.push(parsed.subpath);
+      }
+    }
+    return subkeys.sort((a, b) => a.localeCompare(b));
+  }
+
+  /** Test helper that returns all entries for a key. */
+  getEntries(key: SessionKey): SessionStoreEntry[] {
+    return cloneEntries(this.store.get(this.keyToString(key)) ?? []);
+  }
+
+  /** Number of main transcripts stored in memory. */
+  get size(): number {
+    let count = 0;
+    for (const [storeKey, entries] of this.store) {
+      const parsed = parseStoreKey(storeKey);
+      if (parsed && !parsed.subpath && entries.length > 0) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  /** Clears all stored transcripts. */
+  clear(): void {
+    this.store.clear();
+    this.mtimes.clear();
+  }
+}
+
 /** Lists locally persisted Claude Code sessions visible from the configured session directories. */
 export async function listSessions(options: ListSessionsOptions = {}): Promise<SDKSessionInfo[]> {
+  if (options.sessionStore) {
+    return listSessionsFromStore(options.sessionStore, options);
+  }
+
   const directories = collectProjectDirectories(options.dir, options.includeWorktrees !== false);
   const sessions: SDKSessionInfo[] = [];
   const seen = new Set<string>();
@@ -217,6 +327,10 @@ export async function getSessionInfo(
   sessionId: string,
   options: GetSessionInfoOptions = {},
 ): Promise<SDKSessionInfo | undefined> {
+  if (options.sessionStore) {
+    return getSessionInfoFromStore(options.sessionStore, sessionId, options.dir);
+  }
+
   const located = findSessionFile(sessionId, options.dir);
   if (!located) {
     return undefined;
@@ -229,6 +343,10 @@ export async function getSessionMessages(
   sessionId: string,
   options: GetSessionMessagesOptions = {},
 ): Promise<SessionMessage[]> {
+  if (options.sessionStore) {
+    return getSessionMessagesFromStore(options.sessionStore, sessionId, options);
+  }
+
   const located = findSessionFile(sessionId, options.dir);
   if (!located) {
     return [];
@@ -249,6 +367,10 @@ export async function listSubagents(
   sessionId: string,
   options: ListSubagentsOptions = {},
 ): Promise<string[]> {
+  if (options.sessionStore) {
+    return listSubagentsFromStore(options.sessionStore, sessionId, options);
+  }
+
   const located = findSessionFile(sessionId, options.dir);
   if (!located) {
     return [];
@@ -277,6 +399,10 @@ export async function getSubagentMessages(
   agentId: string,
   options: _GetSubagentMessagesOptions = {},
 ): Promise<SessionMessage[]> {
+  if (options.sessionStore) {
+    return getSubagentMessagesFromStore(options.sessionStore, sessionId, agentId, options);
+  }
+
   const located = findSessionFile(sessionId, options.dir);
   if (!located) {
     return [];
@@ -309,6 +435,16 @@ export async function renameSession(
   if (!trimmed) {
     throw new ClaudeSDKError("title must be non-empty");
   }
+
+  if (options.sessionStore) {
+    await appendStoreEntry(options.sessionStore, sessionId, options.dir, {
+      type: "custom-title",
+      customTitle: trimmed,
+      sessionId,
+    });
+    return;
+  }
+
   appendToSession(
     sessionId,
     JSON.stringify(
@@ -336,6 +472,15 @@ export async function tagSession(
     throw new ClaudeSDKError("tag must be non-empty");
   }
 
+  if (options.sessionStore) {
+    await appendStoreEntry(options.sessionStore, sessionId, options.dir, {
+      type: "tag",
+      tag: normalized,
+      sessionId,
+    });
+    return;
+  }
+
   appendToSession(
     sessionId,
     JSON.stringify(
@@ -357,6 +502,12 @@ export async function deleteSession(
   options: SessionMutationOptions = {},
 ): Promise<void> {
   assertUuid(sessionId, "sessionId");
+
+  if (options.sessionStore) {
+    await options.sessionStore.delete?.(storeKey(sessionId, options.dir));
+    return;
+  }
+
   const located = findSessionFile(sessionId, options.dir);
   if (!located) {
     throw new ClaudeSDKError(`Session ${sessionId} not found`);
@@ -365,6 +516,7 @@ export async function deleteSession(
   if (error) {
     throw new ClaudeSDKError(`Failed to delete session file: ${error.message}`);
   }
+  tryCatchSync(() => rmSync(join(located.projectDir, sessionId), { recursive: true, force: true }));
 }
 
 /** Creates a new session transcript by copying messages from an existing session. */
@@ -375,6 +527,10 @@ export async function forkSession(
   assertUuid(sessionId, "sessionId");
   if (options.upToMessageId) {
     assertUuid(options.upToMessageId, "upToMessageId");
+  }
+
+  if (options.sessionStore) {
+    return forkSessionInStore(sessionId, options.sessionStore, options);
   }
 
   const located = findSessionFile(sessionId, options.dir);
@@ -423,12 +579,325 @@ export async function forkSession(
   };
 }
 
+/** Copies a local JSONL session transcript into a `SessionStore`. */
+export async function importSessionToStore(
+  sessionId: string,
+  store: SessionStore,
+  options: ImportSessionToStoreOptions = {},
+): Promise<void> {
+  assertUuid(sessionId, "sessionId");
+  const located = findSessionFile(sessionId, options.dir);
+  if (!located) {
+    throw new ClaudeSDKError(`Session ${sessionId} not found`);
+  }
+
+  const batchSize =
+    options.batchSize && options.batchSize > 0 ? options.batchSize : DEFAULT_IMPORT_BATCH_SIZE;
+  await appendFileToStore(located.filePath, storeKey(sessionId, options.dir), store, batchSize);
+
+  if (options.includeSubagents === false) {
+    return;
+  }
+
+  const subagentsDir = join(located.projectDir, sessionId, "subagents");
+  for (const filePath of collectJsonlFiles(subagentsDir)) {
+    const subpath = filePath
+      .slice(join(located.projectDir, sessionId).length + 1)
+      .replace(/\\/g, "/")
+      .replace(/\.jsonl$/, "");
+    await appendFileToStore(
+      filePath,
+      { ...storeKey(sessionId, options.dir), subpath },
+      store,
+      batchSize,
+    );
+  }
+}
+
 function readSessionFileContent(filePath: string): string {
   const { data, error } = tryCatchSync(() => readFileSync(filePath, "utf8"));
   if (error) {
     throw new ClaudeSDKError(`Failed to read session file: ${error.message}`);
   }
   return data;
+}
+
+function storeKey(sessionId: string, dir?: string, subpath?: string): SessionKey {
+  return {
+    projectKey: sanitizePath(canonicalizePath(dir ?? ".")),
+    sessionId,
+    ...(subpath ? { subpath } : {}),
+  };
+}
+
+function parseStoreKey(value: string): SessionKey | undefined {
+  const [projectKey, sessionId, subpath] = value.split("\0");
+  if (!projectKey || !sessionId) {
+    return undefined;
+  }
+  return {
+    projectKey,
+    sessionId,
+    ...(subpath ? { subpath } : {}),
+  };
+}
+
+function cloneEntries(entries: SessionStoreEntry[]): SessionStoreEntry[] {
+  return entries.map((entry) => ({ ...entry }));
+}
+
+function entriesToContent(entries: SessionStoreEntry[]): string {
+  return entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+}
+
+function readSessionInfoFromEntries(
+  sessionId: string,
+  entries: SessionStoreEntry[],
+  mtime = Date.now(),
+): SDKSessionInfo | undefined {
+  if (entries.length === 0) {
+    return undefined;
+  }
+
+  const content = entriesToContent(entries);
+  const bytes = Buffer.byteLength(content, "utf8");
+  const lite = {
+    mtime,
+    size: bytes,
+    head: content.slice(0, LITE_READ_BUF_SIZE),
+    tail: content.slice(Math.max(0, content.length - LITE_READ_BUF_SIZE)),
+  };
+  return buildSessionInfo(lite, sessionId, `${sessionId}.jsonl`);
+}
+
+async function listSessionsFromStore(
+  store: SessionStore,
+  options: ListSessionsOptions,
+): Promise<SDKSessionInfo[]> {
+  if (!store.listSessions) {
+    throw new ClaudeSDKError(
+      "sessionStore.listSessions is not implemented -- cannot list sessions. Provide a store with a listSessions() method.",
+    );
+  }
+
+  const projectKey = storeKey("", options.dir).projectKey;
+  const listed = await store.listSessions(projectKey);
+  const sorted = listed.slice().sort((left, right) => right.mtime - left.mtime);
+  const page = paginate(sorted, options.limit, options.offset);
+  const sessions: SDKSessionInfo[] = [];
+
+  for (const entry of page) {
+    const entries = await store.load({ projectKey, sessionId: entry.sessionId });
+    if (!entries || entries.length === 0) {
+      continue;
+    }
+    const info = readSessionInfoFromEntries(entry.sessionId, entries, entry.mtime);
+    if (info) {
+      sessions.push(info);
+    }
+  }
+  return sessions;
+}
+
+async function getSessionInfoFromStore(
+  store: SessionStore,
+  sessionId: string,
+  dir?: string,
+): Promise<SDKSessionInfo | undefined> {
+  if (!isUuid(sessionId)) {
+    return undefined;
+  }
+  const entries = await store.load(storeKey(sessionId, dir));
+  return entries ? readSessionInfoFromEntries(sessionId, entries) : undefined;
+}
+
+async function getSessionMessagesFromStore(
+  store: SessionStore,
+  sessionId: string,
+  options: GetSessionMessagesOptions,
+): Promise<SessionMessage[]> {
+  if (!isUuid(sessionId)) {
+    return [];
+  }
+  const entries = await store.load(storeKey(sessionId, options.dir));
+  if (!entries || entries.length === 0) {
+    return [];
+  }
+  const chain = buildConversationChain(parseTranscript(entriesToContent(entries)));
+  return paginate(
+    chain
+      .filter((entry) => isVisibleMessage(entry, Boolean(options.includeSystemMessages)))
+      .map(toSessionMessage),
+    options.limit,
+    options.offset,
+  );
+}
+
+async function listSubagentsFromStore(
+  store: SessionStore,
+  sessionId: string,
+  options: ListSubagentsOptions,
+): Promise<string[]> {
+  if (!isUuid(sessionId)) {
+    return [];
+  }
+  if (!store.listSubkeys) {
+    throw new ClaudeSDKError(
+      "sessionStore.listSubkeys is not implemented -- cannot list subagents. Provide a store with a listSubkeys() method.",
+    );
+  }
+
+  const key = storeKey(sessionId, options.dir);
+  const subkeys = await store.listSubkeys({ projectKey: key.projectKey, sessionId });
+  const agents = [
+    ...new Set(
+      subkeys.flatMap((subkey) => {
+        if (!subkey.startsWith("subagents/")) {
+          return [];
+        }
+        const name = subkey.split("/").at(-1);
+        return name?.startsWith("agent-") ? [name.slice("agent-".length)] : [];
+      }),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+  return paginate(agents, options.limit, options.offset);
+}
+
+async function getSubagentMessagesFromStore(
+  store: SessionStore,
+  sessionId: string,
+  agentId: string,
+  options: _GetSubagentMessagesOptions,
+): Promise<SessionMessage[]> {
+  if (!isUuid(sessionId)) {
+    return [];
+  }
+
+  let subpath = `subagents/agent-${agentId}`;
+  const key = storeKey(sessionId, options.dir);
+  if (store.listSubkeys) {
+    const subkeys = await store.listSubkeys({ projectKey: key.projectKey, sessionId });
+    const match = subkeys.find((candidate) => {
+      const name = candidate.split("/").at(-1);
+      return candidate.startsWith("subagents/") && name === `agent-${agentId}`;
+    });
+    if (!match) {
+      return [];
+    }
+    subpath = match;
+  }
+
+  const entries = await store.load({ ...key, subpath });
+  if (!entries || entries.length === 0) {
+    return [];
+  }
+  const chain = buildConversationChain(parseTranscript(entriesToContent(entries)));
+  return paginate(
+    chain
+      .filter((entry) => isVisibleMessage(entry, Boolean(options.includeSystemMessages)))
+      .map(toSessionMessage),
+    options.limit,
+    options.offset,
+  );
+}
+
+async function appendStoreEntry(
+  store: SessionStore,
+  sessionId: string,
+  dir: string | undefined,
+  entry: SessionStoreEntry,
+): Promise<void> {
+  await store.append(storeKey(sessionId, dir), [entry]);
+}
+
+async function forkSessionInStore(
+  sessionId: string,
+  store: SessionStore,
+  options: ForkSessionOptions,
+): Promise<ForkSessionResult> {
+  const key = storeKey(sessionId, options.dir);
+  const loaded = await store.load(key);
+  if (!loaded || loaded.length === 0) {
+    throw new ClaudeSDKError(`Session ${sessionId} not found`);
+  }
+
+  const entries = parseTranscript(entriesToContent(loaded)).filter(
+    (entry) => entry.isSidechain !== true,
+  );
+  if (entries.length === 0) {
+    throw new ClaudeSDKError(`Session ${sessionId} has no transcript entries`);
+  }
+
+  const writable = entries.filter((entry) => entry.type !== "progress");
+  let truncated = writable;
+  if (options.upToMessageId) {
+    const index = writable.findIndex((entry) => entry.uuid === options.upToMessageId);
+    if (index === -1) {
+      throw new ClaudeSDKError(
+        `Message ${options.upToMessageId} not found in session ${sessionId}`,
+      );
+    }
+    truncated = writable.slice(0, index + 1);
+  }
+
+  const forkedSessionId = randomUUID();
+  const lines = remapEntryUuids(truncated, forkedSessionId, sessionId);
+  const existingInfo = readSessionInfoFromEntries(sessionId, loaded);
+  const baseTitle =
+    options.title?.trim() || existingInfo?.customTitle || existingInfo?.summary || "Forked session";
+
+  lines.push(
+    JSON.stringify({
+      type: "custom-title",
+      sessionId: forkedSessionId,
+      customTitle: options.title?.trim() || `${baseTitle} (fork)`,
+    }),
+  );
+
+  await store.append(
+    { projectKey: key.projectKey, sessionId: forkedSessionId },
+    lines.map((line) => JSON.parse(line) as SessionStoreEntry),
+  );
+  return { sessionId: forkedSessionId };
+}
+
+async function appendFileToStore(
+  filePath: string,
+  key: SessionKey,
+  store: SessionStore,
+  batchSize: number,
+): Promise<void> {
+  let batch: SessionStoreEntry[] = [];
+  for (const line of readSessionFileContent(filePath).split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    batch.push(JSON.parse(line) as SessionStoreEntry);
+    if (batch.length >= batchSize) {
+      await store.append(key, batch);
+      batch = [];
+    }
+  }
+  if (batch.length > 0) {
+    await store.append(key, batch);
+  }
+}
+
+function collectJsonlFiles(root: string): string[] {
+  if (!existsSync(root)) {
+    return [];
+  }
+
+  const files: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...collectJsonlFiles(path));
+    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+      files.push(path);
+    }
+  }
+  return files;
 }
 
 function remapEntryUuids(
@@ -478,7 +947,14 @@ function readSessionInfo(filePath: string, sessionId: string): SDKSessionInfo | 
   if (!lite) {
     return undefined;
   }
+  return buildSessionInfo(lite, sessionId, filePath);
+}
 
+function buildSessionInfo(
+  lite: LiteSessionFile,
+  sessionId: string,
+  filePath: string,
+): SDKSessionInfo | undefined {
   const lastField = (key: string) =>
     extractLastJsonStringField(lite.tail, key) || extractLastJsonStringField(lite.head, key);
 

@@ -54,3 +54,6 @@ export const HOOK_EVENTS = [
   "CwdChanged",
   "FileChanged",
 ] as const;
+
+/** Marker that splits static and dynamic sections in an array system prompt. */
+export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";

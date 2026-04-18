@@ -98,9 +98,11 @@ const zInitializeControlRequest = z.object({
   hooks: z.record(z.string(), z.array(zHookConfig)).optional(),
   sdkMcpServers: z.array(z.string()).optional(),
   jsonSchema: zRecordUnknown.optional(),
-  systemPrompt: z.string().optional(),
+  systemPrompt: z.union([z.string(), z.array(z.string())]).optional(),
   appendSystemPrompt: z.string().optional(),
+  excludeDynamicSections: z.boolean().optional(),
   agents: z.record(z.string(), z.unknown()).optional(),
+  title: z.string().optional(),
   promptSuggestions: z.boolean().optional(),
   agentProgressSummaries: z.boolean().optional(),
 });
@@ -140,6 +142,9 @@ const zElicitationRequest = z.object({
   url: z.string().optional(),
   elicitation_id: z.string().optional(),
   requested_schema: zRecordUnknown.optional(),
+  title: z.string().optional(),
+  display_name: z.string().optional(),
+  description: z.string().optional(),
 });
 
 const zPermissionMode = z.union([

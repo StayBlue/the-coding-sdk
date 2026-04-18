@@ -33,6 +33,46 @@ export type BaseOutputFormat = {
 /** Configuration scope used by Claude Code settings and hooks. */
 export type ConfigScope = "local" | "user" | "project";
 
+type RemoteControlHandle = {
+  close(): void | Promise<void>;
+  [Symbol.asyncDispose]?(): Promise<void>;
+};
+
+/** Structured failure returned by alpha remote-control connection helpers. */
+export type ConnectRemoteControlError = {
+  kind: "conflict" | "auth" | "network" | "unknown";
+  detail: string;
+};
+
+/** Options for alpha remote-control connection helpers. */
+export type ConnectRemoteControlOptions = {
+  dir: string;
+  registrationDir?: string;
+  name?: string;
+  workerType?: string;
+  branch?: string;
+  gitRepoUrl?: string | null;
+  getAccessToken: () => string | undefined;
+  baseUrl: string;
+  orgUUID: string;
+  model: string;
+  perpetual?: boolean;
+  initialSSESequenceNum?: number;
+  onAuth401?: (staleAccessToken: string) => Promise<boolean>;
+  onConflict?: (detail: { machineName: string; message: string }) => Promise<"takeover" | "abort">;
+};
+
+/** Discriminated result returned by alpha remote-control connection helpers. */
+export type ConnectRemoteControlResult =
+  | {
+      ok: true;
+      handle: RemoteControlHandle;
+    }
+  | {
+      ok: false;
+      error: ConnectRemoteControlError;
+    };
+
 /** Fast-mode status reported by the runtime. */
 export type FastModeState = "off" | "cooldown" | "on";
 
@@ -47,7 +87,7 @@ export type SDKAssistantMessageError =
   | "max_output_tokens";
 
 /** High-level session status emitted by system status messages. */
-export type SDKStatus = "compacting" | null;
+export type SDKStatus = "compacting" | "requesting" | null;
 
 /** Terminal reason attached to a completed result when available. */
 export type TerminalReason =
@@ -134,6 +174,9 @@ export type ElicitationRequest = {
   url?: string;
   elicitationId?: string;
   requestedSchema?: Record<string, unknown>;
+  title?: string;
+  displayName?: string;
+  description?: string;
 };
 
 /** Response shape returned from an elicitation handler. */
@@ -556,6 +599,7 @@ export type PreToolUseHookSpecificOutput = {
 export type UserPromptSubmitHookSpecificOutput = {
   hookEventName: "UserPromptSubmit";
   additionalContext?: string;
+  sessionTitle?: string;
 };
 
 /** Hook-specific output shape for `SessionStart`. */
@@ -766,9 +810,16 @@ export type JsonSchemaOutputFormat = {
 export type OutputFormat = JsonSchemaOutputFormat;
 
 /** Thinking mode that lets the runtime choose the budget adaptively. */
-export type ThinkingAdaptive = { type: "adaptive" };
+export type ThinkingAdaptive = {
+  type: "adaptive";
+  display?: "summarized" | "omitted";
+};
 /** Thinking mode with an optional explicit budget. */
-export type ThinkingEnabled = { type: "enabled"; budgetTokens?: number };
+export type ThinkingEnabled = {
+  type: "enabled";
+  budgetTokens?: number;
+  display?: "summarized" | "omitted";
+};
 /** Thinking mode that disables extended reasoning. */
 export type ThinkingDisabled = { type: "disabled" };
 /** Configures Claude Code thinking behavior for a query or session. */
@@ -829,11 +880,18 @@ export type McpClaudeAIProxyServerConfig = {
   id: string;
 };
 
+/** Per-tool permission policy for remote MCP servers. */
+export type McpServerToolPolicy = {
+  name: string;
+  permission_policy: "always_allow" | "always_ask" | "always_deny";
+};
+
 /** MCP server configuration for HTTP transport. */
 export type McpHttpServerConfig = {
   type: "http";
   url: string;
   headers?: Record<string, string>;
+  tools?: McpServerToolPolicy[];
 };
 
 /** MCP server configuration for Server-Sent Events transport. */
@@ -841,6 +899,7 @@ export type McpSSEServerConfig = {
   type: "sse";
   url: string;
   headers?: Record<string, string>;
+  tools?: McpServerToolPolicy[];
 };
 
 /** MCP server configuration for a stdio-spawned server process. */
@@ -943,6 +1002,30 @@ export type TaskBudget = {
   total: number;
 };
 
+/** Identifies a main session transcript or subagent transcript in a session store. */
+export type SessionKey = {
+  projectKey: string;
+  sessionId: string;
+  subpath?: string;
+};
+
+/** Opaque JSON transcript entry stored by `SessionStore` adapters. */
+export type SessionStoreEntry = {
+  type: string;
+  uuid?: string;
+  timestamp?: string;
+  [k: string]: unknown;
+};
+
+/** Adapter for mirroring or loading Claude Code transcripts from external storage. */
+export type SessionStore = {
+  append(key: SessionKey, entries: SessionStoreEntry[]): Promise<void>;
+  load(key: SessionKey): Promise<SessionStoreEntry[] | null>;
+  listSessions?(projectKey: string): Promise<Array<{ sessionId: string; mtime: number }>>;
+  delete?(key: SessionKey): Promise<void>;
+  listSubkeys?(key: { projectKey: string; sessionId: string }): Promise<string[]>;
+};
+
 /** Common runtime options for queries, sessions, and transport startup. */
 export type Options = {
   abortController?: AbortController;
@@ -967,6 +1050,8 @@ export type Options = {
   hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
   onElicitation?: OnElicitation;
   persistSession?: boolean;
+  sessionStore?: SessionStore;
+  loadTimeoutMs?: number;
   includeHookEvents?: boolean;
   includePartialMessages?: boolean;
   thinking?: ThinkingConfig;
@@ -1000,16 +1085,32 @@ export type Options = {
   strictMcpConfig?: boolean;
   systemPrompt?:
     | string
+    | string[]
     | {
         type: "preset";
         preset: "claude_code";
         append?: string;
+        excludeDynamicSections?: boolean;
       };
+  title?: string;
   spawnClaudeCodeProcess?: (options: SpawnOptions) => SpawnedProcess;
 };
 
 /** Parsed Claude Code settings payload. */
 export type Settings = Record<string, unknown>;
+
+/** Settings file parse or validation error reported by the runtime. */
+export type SDKSettingsParseError = {
+  file?: string;
+  path: string;
+  message: string;
+};
+
+/** User message received from a browser or bridge transport. */
+export type InboundPrompt = {
+  content: string | unknown[];
+  uuid?: string;
+};
 
 export type SDKBaseMessage = {
   type: string;
@@ -1025,6 +1126,8 @@ export type SDKUserMessage = SDKBaseMessage & {
   isSynthetic?: boolean;
   tool_use_result?: unknown;
   priority?: "now" | "next" | "later";
+  origin?: SDKMessageOrigin;
+  shouldQuery?: boolean;
   timestamp?: string;
 };
 
@@ -1103,6 +1206,14 @@ export type SDKPromptSuggestionMessage = SDKBaseMessage & {
   suggestion: string;
 };
 
+/** Provenance for user-role messages received from non-keyboard sources. */
+export type SDKMessageOrigin =
+  | { kind: "human" }
+  | { kind: "channel"; server: string }
+  | { kind: "peer"; from: string; name?: string }
+  | { kind: "task-notification" }
+  | { kind: "coordinator" };
+
 /** Replayed user message emitted when restoring existing transcript history. */
 export type SDKUserMessageReplay = SDKBaseMessage & {
   type: "user";
@@ -1111,6 +1222,8 @@ export type SDKUserMessageReplay = SDKBaseMessage & {
   isSynthetic?: boolean;
   tool_use_result?: unknown;
   priority?: "now" | "next" | "later";
+  origin?: SDKMessageOrigin;
+  shouldQuery?: boolean;
   timestamp?: string;
   uuid: UUID;
   session_id: string;
@@ -1135,6 +1248,7 @@ export type SDKResultSuccess = {
   duration_ms: number;
   duration_api_ms: number;
   is_error: boolean;
+  api_error_status?: number | null;
   num_turns: number;
   result: string;
   stop_reason: string | null;
@@ -1291,6 +1405,8 @@ export type SDKStatusMessage = {
   subtype: "status";
   status: SDKStatus;
   permissionMode?: PermissionMode;
+  compact_result?: "success" | "failed";
+  compact_error?: string;
   uuid: UUID;
   session_id: string;
 };
@@ -1309,6 +1425,7 @@ export type SDKTaskNotificationMessage = {
     tool_uses: number;
     duration_ms: number;
   };
+  skip_transcript?: boolean;
   uuid: UUID;
   session_id: string;
 };
@@ -1341,6 +1458,76 @@ export type SDKTaskStartedMessage = {
   task_type?: string;
   workflow_name?: string;
   prompt?: string;
+  skip_transcript?: boolean;
+  uuid: UUID;
+  session_id: string;
+};
+
+/** Patch-style update for a background task. */
+export type SDKTaskUpdatedMessage = {
+  type: "system";
+  subtype: "task_updated";
+  task_id: string;
+  patch: {
+    status?: "pending" | "running" | "completed" | "failed" | "killed";
+    description?: string;
+    end_time?: number;
+    total_paused_ms?: number;
+    error?: string;
+    is_backgrounded?: boolean;
+  };
+  uuid: UUID;
+  session_id: string;
+};
+
+/** Notification emitted by the runtime notification queue. */
+export type SDKNotificationMessage = {
+  type: "system";
+  subtype: "notification";
+  key: string;
+  text: string;
+  priority: "low" | "medium" | "high" | "immediate";
+  color?: string;
+  timeout_ms?: number;
+  uuid: UUID;
+  session_id: string;
+};
+
+/** Progress emitted while headless plugins are installed. */
+export type SDKPluginInstallMessage = {
+  type: "system";
+  subtype: "plugin_install";
+  status: "started" | "installed" | "failed" | "completed";
+  name?: string;
+  error?: string;
+  uuid: UUID;
+  session_id: string;
+};
+
+/** Message emitted when memory recall adds memories to a turn. */
+export type SDKMemoryRecallMessage = {
+  type: "system";
+  subtype: "memory_recall";
+  mode: "select" | "synthesize";
+  memories: Array<{
+    path: string;
+    scope: "personal" | "team";
+    content?: string;
+  }>;
+  uuid: UUID;
+  session_id: string;
+};
+
+/** Message emitted when a `SessionStore.append()` mirror batch fails. */
+export type SDKMirrorErrorMessage = {
+  type: "system";
+  subtype: "mirror_error";
+  error: string;
+  key: {
+    projectKey: string;
+    sessionId: string;
+    subpath?: string;
+  };
   uuid: UUID;
   session_id: string;
 };
@@ -1364,10 +1551,15 @@ export type SDKMessage =
   | SDKToolProgressMessage
   | SDKToolUseSummaryMessage
   | SDKPromptSuggestionMessage
+  | SDKPluginInstallMessage
   | SDKTaskNotificationMessage
   | SDKTaskStartedMessage
+  | SDKTaskUpdatedMessage
   | SDKTaskProgressMessage
   | SDKSessionStateChangedMessage
+  | SDKNotificationMessage
+  | SDKMemoryRecallMessage
+  | SDKMirrorErrorMessage
   | SDKAuthStatusMessage
   | SDKFilesPersistedEvent
   | SDKElicitationCompleteMessage;
@@ -1534,6 +1726,7 @@ export type SessionMessage = {
 /** Common options for local session mutation helpers. */
 export type SessionMutationOptions = {
   dir?: string;
+  sessionStore?: SessionStore;
 };
 
 /** Options for listing persisted sessions. */
@@ -1542,11 +1735,13 @@ export type ListSessionsOptions = {
   limit?: number;
   offset?: number;
   includeWorktrees?: boolean;
+  sessionStore?: SessionStore;
 };
 
 /** Options for looking up a single persisted session. */
 export type GetSessionInfoOptions = {
   dir?: string;
+  sessionStore?: SessionStore;
 };
 
 /** Options for reading messages from a persisted session transcript. */
@@ -1555,6 +1750,7 @@ export type GetSessionMessagesOptions = {
   limit?: number;
   offset?: number;
   includeSystemMessages?: boolean;
+  sessionStore?: SessionStore;
 };
 
 /** Options for reading messages from a subagent transcript. */
@@ -1563,6 +1759,7 @@ export type GetSubagentMessagesOptions = {
   limit?: number;
   offset?: number;
   includeSystemMessages?: boolean;
+  sessionStore?: SessionStore;
 };
 
 /** Options for listing subagent transcripts beneath a session. */
@@ -1570,6 +1767,14 @@ export type ListSubagentsOptions = {
   dir?: string;
   limit?: number;
   offset?: number;
+  sessionStore?: SessionStore;
+};
+
+/** Options for copying a local transcript into a `SessionStore`. */
+export type ImportSessionToStoreOptions = {
+  dir?: string;
+  includeSubagents?: boolean;
+  batchSize?: number;
 };
 
 /** Options controlling how a session transcript is forked. */
@@ -1624,6 +1829,11 @@ export type StdoutMessage =
     }
   | {
       type: "keep_alive";
+    }
+  | {
+      type: "transcript_mirror";
+      filePath: string;
+      entries: SessionStoreEntry[];
     };
 
 /** Low-level transport used by the query controller to talk to Claude Code. */
@@ -1663,6 +1873,12 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   close(): void;
 }
 
+/** Pre-warmed query handle returned by `startup()`. */
+export interface WarmQuery extends AsyncDisposable {
+  query(prompt: string | AsyncIterable<SDKUserMessage>): Query;
+  close(): void;
+}
+
 /** Control request payloads that can be exchanged with the Claude Code process. */
 export type SDKControlRequestInner =
   | {
@@ -1672,9 +1888,11 @@ export type SDKControlRequestInner =
       >;
       sdkMcpServers?: string[];
       jsonSchema?: Record<string, unknown>;
-      systemPrompt?: string;
+      systemPrompt?: string | string[];
       appendSystemPrompt?: string;
+      excludeDynamicSections?: boolean;
       agents?: Record<string, AgentDefinition>;
+      title?: string;
       promptSuggestions?: boolean;
       agentProgressSummaries?: boolean;
     }

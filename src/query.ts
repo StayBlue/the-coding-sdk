@@ -9,6 +9,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { AsyncQueue } from "./async-queue.ts";
 import { AbortError, CLIConnectionError } from "./errors.ts";
@@ -47,12 +50,18 @@ import type {
   SDKControlResponse,
   SDKMessage,
   SDKResultMessage,
+  SessionKey,
+  SessionStoreEntry,
   SDKUserMessage,
   Settings,
   SlashCommand,
   StdoutMessage,
   Transport,
+  WarmQuery,
 } from "./types.ts";
+
+const MAX_SANITIZED_LENGTH = 200;
+const SANITIZE_RE = /[^a-zA-Z0-9]/g;
 
 type QueryControllerOptions = {
   transport: Transport;
@@ -85,6 +94,8 @@ export class QueryController implements Query {
   #sdkMcpServers = new Map<string, NonNullable<Options["mcpServers"]>[string] & { type: "sdk" }>();
   #sdkMcpBridges = new Map<string, McpBridgeTransport>();
   #pendingMcpResponses = new Map<string, { resolve: (msg: JSONRPCMessage) => void }>();
+  #cleanupCallbacks: Array<() => void> = [];
+  #cleanupRun = false;
 
   constructor({ transport, options }: QueryControllerOptions) {
     this.#transport = transport;
@@ -99,15 +110,29 @@ export class QueryController implements Query {
     });
   }
 
+  addCleanupCallback(callback: () => void): void {
+    if (this.#cleanupRun || this.#closed) {
+      callback();
+      return;
+    }
+    this.#cleanupCallbacks.push(callback);
+  }
+
   async initialize(): Promise<SDKControlInitializeResponse> {
     const failedSdkServers = await this.#connectSdkMcpBridges();
 
     const hooks = this.#convertHooks();
     const systemPrompt =
-      typeof this.#options.systemPrompt === "string" ? this.#options.systemPrompt : undefined;
+      typeof this.#options.systemPrompt === "string" || Array.isArray(this.#options.systemPrompt)
+        ? this.#options.systemPrompt
+        : undefined;
     const appendSystemPrompt =
-      typeof this.#options.systemPrompt === "object"
+      typeof this.#options.systemPrompt === "object" && !Array.isArray(this.#options.systemPrompt)
         ? this.#options.systemPrompt.append
+        : undefined;
+    const excludeDynamicSections =
+      typeof this.#options.systemPrompt === "object" && !Array.isArray(this.#options.systemPrompt)
+        ? this.#options.systemPrompt.excludeDynamicSections
         : undefined;
     const outputFormat =
       this.#options.outputFormat?.type === "json_schema"
@@ -122,7 +147,9 @@ export class QueryController implements Query {
         ...(outputFormat ? { jsonSchema: outputFormat } : {}),
         ...(systemPrompt ? { systemPrompt } : {}),
         ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
+        ...(excludeDynamicSections != null ? { excludeDynamicSections } : {}),
         ...(this.#options.agents ? { agents: this.#options.agents } : {}),
+        ...(this.#options.title ? { title: this.#options.title } : {}),
         ...(this.#options.promptSuggestions != null
           ? { promptSuggestions: this.#options.promptSuggestions }
           : {}),
@@ -376,6 +403,7 @@ export class QueryController implements Query {
     }
 
     this.#transport.close();
+    this.#runCleanupCallbacks();
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
@@ -415,6 +443,11 @@ export class QueryController implements Query {
           continue;
         }
 
+        if (message.type === "transcript_mirror") {
+          await this.#handleTranscriptMirror(message);
+          continue;
+        }
+
         if (!isSdkMessage(message)) {
           continue;
         }
@@ -427,9 +460,11 @@ export class QueryController implements Query {
       }
       this.#markFirstResult();
       this.#queue.close();
+      this.#runCleanupCallbacks();
     } catch (error) {
       this.#markFirstResult();
       this.#queue.fail(error);
+      this.#runCleanupCallbacks();
       throw error;
     }
   }
@@ -741,6 +776,49 @@ export class QueryController implements Query {
     }
   }
 
+  async #handleTranscriptMirror(
+    message: Extract<StdoutMessage, { type: "transcript_mirror" }>,
+  ): Promise<void> {
+    const store = this.#options.sessionStore;
+    if (!store) {
+      return;
+    }
+
+    const key = sessionKeyFromTranscriptPath(message.filePath, this.#options);
+    if (!key) {
+      return;
+    }
+
+    try {
+      await store.append(key, message.entries);
+    } catch (error) {
+      this.#queue.push({
+        type: "system",
+        subtype: "mirror_error",
+        error: error instanceof Error ? error.message : String(error),
+        key,
+        uuid: randomUUID(),
+        session_id: key.sessionId,
+      });
+    }
+  }
+
+  #runCleanupCallbacks(): void {
+    if (this.#cleanupRun) {
+      return;
+    }
+    this.#cleanupRun = true;
+    const callbacks = this.#cleanupCallbacks;
+    this.#cleanupCallbacks = [];
+    for (const callback of callbacks) {
+      try {
+        callback();
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  }
+
   #seedSdkMcpServers(servers: Options["mcpServers"]): void {
     this.#sdkMcpServers.clear();
     this.#sdkMcpBridges.clear();
@@ -811,6 +889,10 @@ export class QueryController implements Query {
       elicitation_id?: unknown;
       requestedSchema?: unknown;
       requested_schema?: unknown;
+      title?: unknown;
+      displayName?: unknown;
+      display_name?: unknown;
+      description?: unknown;
     },
   ): ElicitationRequest {
     return {
@@ -829,6 +911,11 @@ export class QueryController implements Query {
             >,
           }
         : {}),
+      ...(params.title ? { title: String(params.title) } : {}),
+      ...((params.displayName ?? params.display_name)
+        ? { displayName: String(params.displayName ?? params.display_name) }
+        : {}),
+      ...(params.description ? { description: String(params.description) } : {}),
     };
   }
 
@@ -891,31 +978,15 @@ export function query(params: {
   options?: Options;
 }): Query {
   const baseOptions = params.options ?? {};
-  const options =
-    baseOptions.canUseTool == null
-      ? baseOptions
-      : {
-          ...baseOptions,
-          permissionPromptToolName: "stdio",
-        };
-
-  if (baseOptions.canUseTool != null) {
-    if (typeof params.prompt === "string") {
-      throw new Error(
-        "canUseTool callback requires streaming mode. Please provide prompt as an AsyncIterable instead of a string.",
-      );
-    }
-    if (baseOptions.permissionPromptToolName != null) {
-      throw new Error(
-        "canUseTool callback cannot be used with permissionPromptToolName. Please use one or the other.",
-      );
-    }
-  }
+  assertCanUseToolPromptMode(baseOptions, params.prompt);
+  const options = normalizeOptionsForCanUseTool(baseOptions);
 
   const transport = new SubprocessCLITransport(options);
   const controller = new QueryController({ transport, options });
 
   const startupPromise = (async () => {
+    const cleanup = await prepareSessionStoreResume(options);
+    controller.addCleanupCallback(cleanup);
     await transport.connect();
     void controller.start();
     await controller.initialize();
@@ -943,6 +1014,98 @@ export function query(params: {
   return controller;
 }
 
+/** Pre-warms a Claude Code subprocess and returns a one-shot query handle. */
+export async function startup(
+  params: {
+    options?: Options;
+    initializeTimeoutMs?: number;
+  } = {},
+): Promise<WarmQuery> {
+  const options = normalizeOptionsForCanUseTool(params.options ?? {});
+  const transport = new SubprocessCLITransport(options);
+  const controller = new QueryController({ transport, options });
+  const cleanup = await prepareSessionStoreResume(options);
+  controller.addCleanupCallback(cleanup);
+
+  const startupPromise = (async () => {
+    await transport.connect();
+    void controller.start();
+    await withTimeout(
+      controller.initialize(),
+      params.initializeTimeoutMs ?? 60_000,
+      "Subprocess initialization did not complete within the configured timeout",
+    );
+  })();
+
+  controller.setStartupPromise(startupPromise);
+  await startupPromise;
+
+  let used = false;
+  const close = () => {
+    used = true;
+    controller.close();
+  };
+
+  return {
+    query(prompt: string | AsyncIterable<SDKUserMessage>): Query {
+      if (used) {
+        throw new Error("WarmQuery.query() can only be called once");
+      }
+      assertCanUseToolPromptMode(options, prompt);
+      used = true;
+
+      if (typeof prompt === "string") {
+        void (async () => {
+          try {
+            await controller.sendUserMessage(createUserPromptMessage(prompt));
+            void controller.waitForResultAndEndInput();
+          } catch (error) {
+            controller.close(error);
+          }
+        })();
+        return controller;
+      }
+
+      void controller.streamInput(prompt).catch((error) => {
+        controller.close(error);
+      });
+      return controller;
+    },
+    close(): void {
+      close();
+    },
+    async [Symbol.asyncDispose](): Promise<void> {
+      close();
+    },
+  };
+}
+
+function normalizeOptionsForCanUseTool(baseOptions: Options): Options {
+  if (baseOptions.canUseTool == null) {
+    return { ...baseOptions };
+  }
+  if (baseOptions.permissionPromptToolName != null) {
+    throw new Error(
+      "canUseTool callback cannot be used with permissionPromptToolName. Please use one or the other.",
+    );
+  }
+  return {
+    ...baseOptions,
+    permissionPromptToolName: "stdio",
+  };
+}
+
+function assertCanUseToolPromptMode(
+  options: Options,
+  prompt: string | AsyncIterable<SDKUserMessage>,
+): void {
+  if (options.canUseTool != null && typeof prompt === "string") {
+    throw new Error(
+      "canUseTool callback requires streaming mode. Please provide prompt as an AsyncIterable instead of a string.",
+    );
+  }
+}
+
 export async function collectUntilResult(controller: Query): Promise<SDKResultMessage> {
   for await (const message of controller) {
     if (message.type === "result") {
@@ -950,6 +1113,207 @@ export async function collectUntilResult(controller: Query): Promise<SDKResultMe
     }
   }
   throw new CLIConnectionError("No result message was received");
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: Timer | number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new CLIConnectionError(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer as number);
+    }
+  }
+}
+
+async function prepareSessionStoreResume(options: Options): Promise<() => void> {
+  const store = options.sessionStore;
+  if (!store || (!options.resume && !options.continue)) {
+    return () => {};
+  }
+
+  if (options.persistSession === false) {
+    throw new Error(
+      "sessionStore cannot be used with persistSession: false -- local writes are required for transcript mirroring.",
+    );
+  }
+  if (options.enableFileCheckpointing) {
+    throw new Error("enableFileCheckpointing is not yet supported with sessionStore.");
+  }
+
+  let sessionId = options.resume;
+  const projectKey = projectKeyForCwd(options.cwd);
+  const timeoutMs = options.loadTimeoutMs ?? 60_000;
+
+  if (!sessionId && options.continue) {
+    if (!store.listSessions) {
+      throw new Error(
+        "Options.continue with sessionStore requires store.listSessions to be implemented",
+      );
+    }
+    const sessions = await withTimeout(
+      store.listSessions(projectKey),
+      timeoutMs,
+      `SessionStore.listSessions() timed out after ${timeoutMs}ms`,
+    );
+    sessionId = sessions.slice().sort((left, right) => right.mtime - left.mtime)[0]?.sessionId;
+  }
+
+  if (!sessionId) {
+    return () => {};
+  }
+
+  const entries = await withTimeout(
+    store.load({ projectKey, sessionId }),
+    timeoutMs,
+    `SessionStore.load() timed out after ${timeoutMs}ms for session ${sessionId}`,
+  );
+  if (!entries || entries.length === 0) {
+    return () => {};
+  }
+
+  const tempDir = mkdtempSync(join(tmpdir(), "claude-sdk-store-"));
+  const projectDir = join(tempDir, "projects", projectKey);
+  mkdirSync(projectDir, { recursive: true });
+  writeEntriesJsonl(join(projectDir, `${sessionId}.jsonl`), entries);
+
+  if (store.listSubkeys) {
+    const subkeys = await withTimeout(
+      store.listSubkeys({ projectKey, sessionId }),
+      timeoutMs,
+      `SessionStore.listSubkeys() timed out after ${timeoutMs}ms for session ${sessionId}`,
+    );
+    for (const subpath of subkeys) {
+      if (!isSafeStoreSubpath(subpath)) {
+        continue;
+      }
+      const subEntries = await withTimeout(
+        store.load({ projectKey, sessionId, subpath }),
+        timeoutMs,
+        `SessionStore.load() timed out after ${timeoutMs}ms for session ${sessionId} subpath ${subpath}`,
+      );
+      if (!subEntries || subEntries.length === 0) {
+        continue;
+      }
+      writeEntriesJsonl(join(projectDir, sessionId, `${subpath}.jsonl`), subEntries);
+    }
+  }
+
+  copyAuthFiles(tempDir, options.env);
+  options.resume = sessionId;
+  options.env = {
+    ...(options.env ?? process.env),
+    CLAUDE_CONFIG_DIR: tempDir,
+  };
+
+  return () => {
+    rmSync(tempDir, { recursive: true, force: true });
+  };
+}
+
+function writeEntriesJsonl(filePath: string, entries: SessionStoreEntry[]): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n", {
+    mode: 0o600,
+  });
+}
+
+function copyAuthFiles(tempDir: string, env: Options["env"]): void {
+  const configDir = env?.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR;
+  const candidates = [
+    configDir
+      ? join(configDir, ".credentials.json")
+      : join(homedir(), ".claude", ".credentials.json"),
+    configDir ? join(configDir, ".claude.json") : join(homedir(), ".claude.json"),
+  ];
+
+  for (const source of candidates) {
+    if (!existsSync(source)) {
+      continue;
+    }
+    try {
+      copyFileSync(
+        source,
+        join(tempDir, source.endsWith(".claude.json") ? ".claude.json" : ".credentials.json"),
+      );
+    } catch {
+      // Auth files are best-effort; the CLI can still authenticate through env vars.
+    }
+  }
+}
+
+function isSafeStoreSubpath(subpath: string): boolean {
+  if (!subpath || isAbsolute(subpath) || subpath.split(/[\\/]/).includes("..")) {
+    return false;
+  }
+  return true;
+}
+
+function sessionKeyFromTranscriptPath(filePath: string, options: Options): SessionKey | undefined {
+  const configDir = options.env?.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR;
+  const projectsDir = join(configDir ? resolve(configDir) : join(homedir(), ".claude"), "projects");
+  const relativePath = relative(projectsDir, resolve(filePath));
+  if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) {
+    return undefined;
+  }
+
+  const parts = relativePath.split(/[\\/]/);
+  const [projectKey, sessionPart] = parts;
+  if (!projectKey || !sessionPart) {
+    return undefined;
+  }
+
+  if (parts.length === 2 && sessionPart.endsWith(".jsonl")) {
+    return {
+      projectKey,
+      sessionId: sessionPart.slice(0, -".jsonl".length),
+    };
+  }
+
+  if (parts.length >= 4) {
+    const subParts = parts.slice(2);
+    const last = subParts.at(-1);
+    if (!last?.endsWith(".jsonl")) {
+      return undefined;
+    }
+    subParts[subParts.length - 1] = last.slice(0, -".jsonl".length);
+    return {
+      projectKey,
+      sessionId: sessionPart,
+      subpath: subParts.join("/"),
+    };
+  }
+
+  return undefined;
+}
+
+function projectKeyForCwd(cwd?: string): string {
+  return sanitizePath(canonicalizePath(cwd ?? "."));
+}
+
+function sanitizePath(value: string): string {
+  const sanitized = value.replace(SANITIZE_RE, "-");
+  if (sanitized.length <= MAX_SANITIZED_LENGTH) {
+    return sanitized;
+  }
+  return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${simpleHash(value)}`;
+}
+
+function simpleHash(value: string): string {
+  let hash = 0;
+  for (const char of value) {
+    hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function canonicalizePath(value: string): string {
+  return resolve(value).normalize("NFC");
 }
 
 function isSdkMessage(message: StdoutMessage): message is SDKMessage {
