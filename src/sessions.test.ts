@@ -18,6 +18,8 @@ import {
   getSessionInfo,
   getSessionMessages,
   getSubagentMessages,
+  importSessionToStore,
+  InMemorySessionStore,
   listSessions,
   listSubagents,
   unstable_v2_createSession,
@@ -123,6 +125,112 @@ test("session helpers list, read, mutate, and fork sessions", async () => {
 
   await deleteSession(sessionId, { dir: projectPath });
   expect(await getSessionInfo(sessionId, { dir: projectPath })).toBeUndefined();
+});
+
+test("session helpers list, read, mutate, and fork sessions from a SessionStore", async () => {
+  const projectPath = "/tmp/store-project";
+  const sessionId = "550e8400-e29b-41d4-a716-446655440010";
+  const projectKey = sanitizePath(projectPath);
+  const store = new InMemorySessionStore();
+
+  await store.append({ projectKey, sessionId }, [
+    {
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000101",
+      sessionId,
+      message: { role: "user", content: "store hello" },
+      timestamp: "2026-04-03T00:00:00.000Z",
+    },
+    {
+      type: "assistant",
+      uuid: "00000000-0000-4000-8000-000000000102",
+      parentUuid: "00000000-0000-4000-8000-000000000101",
+      sessionId,
+      message: { role: "assistant", content: "store response" },
+    },
+    {
+      type: "custom-title",
+      sessionId,
+      customTitle: "Stored thread",
+    },
+  ]);
+
+  const sessions = await listSessions({ dir: projectPath, sessionStore: store });
+  expect(sessions).toHaveLength(1);
+  expect(sessions[0]).toEqual(
+    expect.objectContaining({
+      sessionId,
+      summary: "Stored thread",
+      firstPrompt: "store hello",
+    }),
+  );
+
+  const messages = await getSessionMessages(sessionId, { dir: projectPath, sessionStore: store });
+  expect(messages.map((message) => message.type)).toEqual(["user", "assistant"]);
+
+  await renameSession(sessionId, "Store renamed", { dir: projectPath, sessionStore: store });
+  await tagSession(sessionId, "store-tag", { dir: projectPath, sessionStore: store });
+
+  const renamed = await getSessionInfo(sessionId, { dir: projectPath, sessionStore: store });
+  expect(renamed).toEqual(
+    expect.objectContaining({
+      summary: "Store renamed",
+      tag: "store-tag",
+    }),
+  );
+
+  const forked = await forkSession(sessionId, { dir: projectPath, sessionStore: store });
+  expect(forked.sessionId).not.toBe(sessionId);
+  expect(store.size).toBe(2);
+
+  await deleteSession(sessionId, { dir: projectPath, sessionStore: store });
+  expect(
+    await getSessionInfo(sessionId, { dir: projectPath, sessionStore: store }),
+  ).toBeUndefined();
+});
+
+test("importSessionToStore copies local transcripts and subagents into a SessionStore", async () => {
+  const root = await Bun.$`mktemp -d ${join(tmpdir(), "claude-sdk-test-store-XXXXXX")}`.text();
+  const claudeRoot = root.trim();
+  tempRoots.push(claudeRoot);
+  process.env.CLAUDE_CONFIG_DIR = claudeRoot;
+
+  const projectPath = "/tmp/import-project";
+  const projectKey = sanitizePath(projectPath);
+  const projectDir = join(claudeRoot, "projects", projectKey);
+  const sessionId = "550e8400-e29b-41d4-a716-446655440011";
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(
+    join(projectDir, `${sessionId}.jsonl`),
+    JSON.stringify({
+      type: "user",
+      uuid: "00000000-0000-4000-8000-000000000111",
+      sessionId,
+      message: { role: "user", content: "import me" },
+    }) + "\n",
+    "utf8",
+  );
+
+  const subagentsDir = join(projectDir, sessionId, "subagents");
+  mkdirSync(subagentsDir, { recursive: true });
+  writeFileSync(
+    join(subagentsDir, "agent-abc123.jsonl"),
+    JSON.stringify({
+      type: "assistant",
+      uuid: "00000000-0000-4000-8000-000000000112",
+      sessionId,
+      message: { role: "assistant", content: "subagent import" },
+    }) + "\n",
+    "utf8",
+  );
+
+  const store = new InMemorySessionStore();
+  await importSessionToStore(sessionId, store, { dir: projectPath });
+
+  expect(store.getEntries({ projectKey, sessionId })).toHaveLength(1);
+  expect(
+    store.getEntries({ projectKey, sessionId, subpath: "subagents/agent-abc123" }),
+  ).toHaveLength(1);
 });
 
 test("getSessionMessages returns empty array for unknown session", async () => {

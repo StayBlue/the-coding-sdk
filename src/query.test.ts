@@ -9,8 +9,7 @@
  */
 
 import { expect, test } from "bun:test";
-import { QueryController, createUserPromptMessage } from "./query.ts";
-import { query } from "./query.ts";
+import { QueryController, createUserPromptMessage, query, startup } from "./query.ts";
 import { createSdkMcpServer, tool } from "./sdk-tools.ts";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
@@ -97,6 +96,96 @@ function createPromptFailureProcess(): {
       emitter.emit("exit", exitCode, null);
     },
   };
+}
+
+function createWarmQueryProcess(): {
+  process: SpawnedProcess;
+  writes: string[];
+} {
+  const emitter = new EventEmitter();
+  const stdout = new Readable({ read() {} });
+  const writes: string[] = [];
+  let exitCode: number | null = null;
+
+  const finish = () => {
+    if (exitCode != null) {
+      return;
+    }
+    stdout.push(null);
+    exitCode = 0;
+    emitter.emit("exit", exitCode, null);
+  };
+
+  const stdin = {
+    write(chunk: string | Buffer, callback: (error?: Error | null) => void) {
+      const payload = chunk.toString();
+      writes.push(payload);
+
+      try {
+        const message = JSON.parse(payload);
+        if (message.type === "control_request" && message.request?.subtype === "initialize") {
+          stdout.push(
+            `${JSON.stringify({
+              type: "control_response",
+              response: {
+                subtype: "success",
+                request_id: message.request_id,
+                response: {
+                  commands: [],
+                  agents: [],
+                  output_style: "default",
+                  available_output_styles: [],
+                  models: [],
+                  account: {},
+                },
+              },
+            })}\n`,
+          );
+          callback();
+          return;
+        }
+
+        if (message.type === "user") {
+          stdout.push(
+            `${JSON.stringify({
+              type: "result",
+              uuid: "result-1",
+              session_id: "warm-session",
+            })}\n`,
+          );
+          callback();
+          queueMicrotask(finish);
+          return;
+        }
+      } catch {
+        // Ignore non-JSON writes in the fake process.
+      }
+
+      callback();
+    },
+    end() {
+      finish();
+    },
+  } as NodeJS.WritableStream;
+
+  const proc: SpawnedProcess = {
+    stdin,
+    stdout,
+    killed: false,
+    get exitCode() {
+      return exitCode;
+    },
+    kill() {
+      (proc as { killed: boolean }).killed = true;
+      finish();
+      return true;
+    },
+    on: emitter.on.bind(emitter),
+    once: emitter.once.bind(emitter),
+    off: emitter.off.bind(emitter),
+  };
+
+  return { process: proc, writes };
 }
 
 class MockTransport implements Transport {
@@ -470,6 +559,97 @@ test("query controller yields known stream messages and skips unknown message ty
   expect(seen).toEqual(["stream_event", "rate_limit_event"]);
 });
 
+test("query controller mirrors transcript batches into a session store", async () => {
+  const transport = new MockTransport();
+  const root = "/tmp/claude-store-root";
+  const entries = [
+    {
+      type: "user",
+      uuid: "entry-1",
+      message: { role: "user", content: "hello" },
+    },
+  ];
+  const appended: Array<{ key: Record<string, string>; entries: unknown[] }> = [];
+
+  transport.enqueue({
+    type: "transcript_mirror",
+    filePath: `${root}/projects/-tmp-project/session-1.jsonl`,
+    entries,
+  });
+  transport.finish();
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      env: { CLAUDE_CONFIG_DIR: root },
+      sessionStore: {
+        async append(key, batch) {
+          appended.push({ key, entries: batch });
+        },
+        async load() {
+          return null;
+        },
+      },
+    },
+  });
+
+  await controller.start();
+
+  expect(appended).toEqual([
+    {
+      key: {
+        projectKey: "-tmp-project",
+        sessionId: "session-1",
+      },
+      entries,
+    },
+  ]);
+});
+
+test("query controller yields mirror_error messages when session store append fails", async () => {
+  const transport = new MockTransport();
+  const root = "/tmp/claude-store-root";
+
+  transport.enqueue({
+    type: "transcript_mirror",
+    filePath: `${root}/projects/-tmp-project/session-1.jsonl`,
+    entries: [{ type: "user", uuid: "entry-1" }],
+  });
+  transport.finish();
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      env: { CLAUDE_CONFIG_DIR: root },
+      sessionStore: {
+        async append() {
+          throw new Error("store unavailable");
+        },
+        async load() {
+          return null;
+        },
+      },
+    },
+  });
+
+  await controller.start();
+  const mirrored = await controller.next();
+
+  expect(mirrored).toEqual({
+    done: false,
+    value: expect.objectContaining({
+      type: "system",
+      subtype: "mirror_error",
+      error: "store unavailable",
+      session_id: "session-1",
+      key: {
+        projectKey: "-tmp-project",
+        sessionId: "session-1",
+      },
+    }),
+  });
+});
+
 test("query controller sendControlRequest times out on unresponsive CLI", async () => {
   const transport = new MockTransport();
   let resolveInit: (() => void) | undefined;
@@ -559,3 +739,42 @@ test("query() surfaces prompt write failures through iterator errors", async () 
 
   finish();
 });
+
+test("startup prewarms the runtime and returns a one-shot query handle", async () => {
+  const { process, writes } = createWarmQueryProcess();
+
+  const warm = await startup({
+    options: {
+      pathToClaudeCodeExecutable: "/fake/claude",
+      spawnClaudeCodeProcess: () => process,
+    },
+  });
+
+  const controller = warm.query("hello");
+  await expect(controller.next()).resolves.toEqual({
+    done: false,
+    value: expect.objectContaining({
+      type: "result",
+      session_id: "warm-session",
+    }),
+  });
+  expect(() => warm.query("again")).toThrow("WarmQuery.query() can only be called once");
+
+  const messageTypes = writes.map((line) => JSON.parse(line).type);
+  expect(messageTypes).toEqual(["control_request", "user"]);
+});
+
+test("startup rejects string prompts when canUseTool is configured", async () => {
+  const { process } = createWarmQueryProcess();
+  const warm = await startup({
+    options: {
+      canUseTool: async () => ({ behavior: "allow" }),
+      pathToClaudeCodeExecutable: "/fake/claude",
+      spawnClaudeCodeProcess: () => process,
+    },
+  });
+
+  expect(() => warm.query("hello")).toThrow(
+    "canUseTool callback requires streaming mode. Please provide prompt as an AsyncIterable instead of a string.",
+  );
+  warm.close();

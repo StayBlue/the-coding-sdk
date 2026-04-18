@@ -45,10 +45,18 @@ test("parseJsonLine returns undefined when JSON does not match schema", () => {
 test("parseSDKControlRequestInner parses initialize subtype", () => {
   const result = parseSDKControlRequestInner({
     subtype: "initialize",
-    systemPrompt: "You are helpful.",
+    systemPrompt: ["Static prompt", "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__", "Dynamic prompt"],
+    excludeDynamicSections: true,
+    title: "Warm thread",
   });
   expect(result?.subtype).toBe("initialize");
-  expect((result as { systemPrompt?: string }).systemPrompt).toBe("You are helpful.");
+  expect((result as { systemPrompt?: string[] }).systemPrompt).toEqual([
+    "Static prompt",
+    "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__",
+    "Dynamic prompt",
+  ]);
+  expect((result as { excludeDynamicSections?: boolean }).excludeDynamicSections).toBe(true);
+  expect((result as { title?: string }).title).toBe("Warm thread");
 });
 
 test("parseSDKControlRequestInner parses can_use_tool subtype", () => {
@@ -77,6 +85,26 @@ test("parseSDKControlRequestInner parses hook_callback subtype", () => {
     input: { hook_event_name: "Notification" },
   });
   expect(result?.subtype).toBe("hook_callback");
+});
+
+test("parseSDKControlRequestInner parses elicitation metadata fields", () => {
+  const result = parseSDKControlRequestInner({
+    subtype: "elicitation",
+    mcp_server_name: "forms",
+    message: "Please fill in the form.",
+    title: "Contact details",
+    display_name: "Contact form",
+    description: "Used for follow-up.",
+  });
+
+  expect(result).toEqual(
+    expect.objectContaining({
+      subtype: "elicitation",
+      title: "Contact details",
+      display_name: "Contact form",
+      description: "Used for follow-up.",
+    }),
+  );
 });
 
 test("parseSDKControlRequestInner parses set_permission_mode subtype", () => {

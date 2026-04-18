@@ -15,7 +15,7 @@
  */
 
 import { expect, test } from "bun:test";
-import { EXIT_REASONS, HOOK_EVENTS } from "./public-constants.ts";
+import { EXIT_REASONS, HOOK_EVENTS, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./public-constants.ts";
 
 test("EXIT_REASONS contains expected values", () => {
   expect(EXIT_REASONS).toContain("clear");
@@ -30,4 +30,8 @@ test("HOOK_EVENTS contains expected values", () => {
   expect(HOOK_EVENTS).toContain("Stop");
   expect(HOOK_EVENTS).toContain("Notification");
   expect(HOOK_EVENTS.length).toBeGreaterThanOrEqual(10);
+});
+
+test("SYSTEM_PROMPT_DYNAMIC_BOUNDARY matches upstream sentinel", () => {
+  expect(SYSTEM_PROMPT_DYNAMIC_BOUNDARY).toBe("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__");
 });

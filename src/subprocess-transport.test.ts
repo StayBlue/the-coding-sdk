@@ -152,6 +152,62 @@ test("buildSpawnCommand includes model and permission flags", async () => {
   expect(capturedArgs).toContain("--max-budget-usd");
   expect(capturedArgs).toContain("10");
   expect(capturedArgs).toContain("--debug");
+
+test("connect uses provided env without inheriting process.env", async () => {
+  const originalMarker = process.env.CLAUDE_SDK_TEST_INHERIT;
+  process.env.CLAUDE_SDK_TEST_INHERIT = "from-process";
+  let capturedEnv: Record<string, string | undefined> | undefined;
+
+  try {
+    const { process: proc } = createMockProcess();
+    const transport = new SubprocessCLITransport({
+      pathToClaudeCodeExecutable: "/fake/claude",
+      env: { CUSTOM_ENV: "from-options" },
+      spawnClaudeCodeProcess: (opts) => {
+        capturedEnv = opts.env;
+        return proc;
+      },
+    });
+    await transport.connect();
+
+    expect(capturedEnv?.CUSTOM_ENV).toBe("from-options");
+    expect(capturedEnv?.CLAUDE_CODE_ENTRYPOINT).toBe("sdk-ts");
+    expect(capturedEnv?.CLAUDE_SDK_TEST_INHERIT).toBeUndefined();
+  } finally {
+    if (originalMarker === undefined) {
+      delete process.env.CLAUDE_SDK_TEST_INHERIT;
+    } else {
+      process.env.CLAUDE_SDK_TEST_INHERIT = originalMarker;
+    }
+  }
+});
+
+test("buildSpawnCommand includes thinking display and session mirror flags", async () => {
+  let capturedArgs: string[] = [];
+
+  const { process: proc } = createMockProcess();
+  const transport = new SubprocessCLITransport({
+    pathToClaudeCodeExecutable: "/fake/claude",
+    thinking: { type: "enabled", budgetTokens: 1024, display: "summarized" },
+    sessionStore: {
+      async append() {},
+      async load() {
+        return null;
+      },
+    },
+    spawnClaudeCodeProcess: (opts) => {
+      capturedArgs = opts.args;
+      return proc;
+    },
+  });
+  await transport.connect();
+
+  expect(capturedArgs).toContain("--max-thinking-tokens");
+  expect(capturedArgs).toContain("1024");
+  expect(capturedArgs).toContain("--thinking-display");
+  expect(capturedArgs).toContain("summarized");
+  expect(capturedArgs).toContain("--session-mirror");
+});
 });
 
 test("readMessages throws CLIJSONDecodeError on buffer overflow", async () => {
