@@ -9,6 +9,7 @@
  */
 
 import { expect, test } from "bun:test";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { QueryController, createUserPromptMessage, query, startup } from "./query.ts";
 import { createSdkMcpServer, tool } from "./sdk-tools.ts";
 import { EventEmitter } from "node:events";
@@ -517,6 +518,399 @@ test("query controller delegates SDK MCP control requests and rejects unsupporte
   });
 });
 
+test("query controller returns empty success payload for bridged MCP notifications", async () => {
+  const transport = new MockTransport();
+  let bridgeTransport:
+    | {
+        onmessage?: (message: JSONRPCMessage) => void;
+      }
+    | undefined;
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: {
+        subtype?: string;
+      };
+    };
+
+    if (message.type === "control_request" && message.request?.subtype === "initialize") {
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      });
+    }
+  };
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      mcpServers: {
+        tools: {
+          type: "sdk",
+          name: "tools",
+          instance: {
+            name: "tools",
+            tools: [],
+            async connect(bridge: { onmessage?: (message: JSONRPCMessage) => void }) {
+              bridgeTransport = bridge;
+            },
+          },
+        } as never,
+      },
+    },
+  });
+
+  const startPromise = controller.start();
+  await controller.initialize();
+  expect(bridgeTransport).toBeDefined();
+
+  transport.enqueue({
+    type: "control_request",
+    request_id: "notify-1",
+    request: {
+      subtype: "mcp_message",
+      server_name: "tools",
+      message: {
+        jsonrpc: "2.0",
+        method: "notifications/initialized",
+      },
+    },
+  });
+  transport.finish();
+  await startPromise;
+
+  const responses = transport.writes
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((message) => message.type === "control_response");
+
+  expect(responses as unknown[]).toContainEqual({
+    type: "control_response",
+    response: {
+      subtype: "success",
+      request_id: "notify-1",
+      response: {},
+    },
+  });
+});
+
+test("query controller enriches bridged MCP initialize capabilities for elicitation", async () => {
+  const transport = new MockTransport();
+  let seenInitialize: JSONRPCMessage | undefined;
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: {
+        subtype?: string;
+      };
+    };
+
+    if (message.type === "control_request" && message.request?.subtype === "initialize") {
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      });
+    }
+  };
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      mcpServers: {
+        tools: {
+          type: "sdk",
+          name: "tools",
+          instance: {
+            name: "tools",
+            tools: [],
+            async connect(bridge: {
+              send(message: JSONRPCMessage): Promise<void>;
+              onmessage?: (message: JSONRPCMessage) => void;
+            }) {
+              bridge.onmessage = (message) => {
+                seenInitialize = message;
+                void bridge.send({
+                  jsonrpc: "2.0",
+                  id: 1,
+                  result: { ok: true },
+                } as JSONRPCMessage);
+              };
+            },
+          },
+        } as never,
+      },
+    },
+  });
+
+  const startPromise = controller.start();
+  await controller.initialize();
+
+  transport.enqueue({
+    type: "control_request",
+    request_id: "init-bridge-1",
+    request: {
+      subtype: "mcp_message",
+      server_name: "tools",
+      message: {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          capabilities: {},
+        },
+      },
+    },
+  });
+  transport.finish();
+  await startPromise;
+
+  expect(seenInitialize).toEqual({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      capabilities: {
+        elicitation: {},
+      },
+    },
+  });
+});
+
+test("query controller differentiates bridged MCP replies from internally correlated responses", async () => {
+  const transport = new MockTransport();
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: {
+        subtype?: string;
+      };
+    };
+
+    if (message.type === "control_request" && message.request?.subtype === "initialize") {
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      });
+    }
+  };
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      mcpServers: {
+        tools: {
+          type: "sdk",
+          name: "tools",
+          instance: {
+            name: "tools",
+            tools: [],
+            async connect(_bridge: { onmessage?: (message: JSONRPCMessage) => void }) {},
+          },
+        } as never,
+      },
+    },
+  });
+
+  const startPromise = controller.start();
+  await controller.initialize();
+
+  transport.enqueue({
+    type: "control_request",
+    request_id: "mcp-request",
+    request: {
+      subtype: "mcp_message",
+      server_name: "tools",
+      message: {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+      },
+    },
+  });
+  transport.enqueue({
+    type: "control_request",
+    request_id: "mcp-result",
+    request: {
+      subtype: "mcp_message",
+      server_name: "tools",
+      message: {
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          tools: [],
+        },
+      },
+    },
+  });
+
+  transport.finish();
+  await startPromise;
+
+  const responses = transport.writes
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((message) => message.type === "control_response");
+
+  expect(responses as unknown[]).toContainEqual({
+    type: "control_response",
+    response: {
+      subtype: "success",
+      request_id: "mcp-request",
+      response: {
+        mcp_response: {
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            tools: [],
+          },
+        },
+      },
+    },
+  });
+
+  expect(responses as unknown[]).toContainEqual({
+    type: "control_response",
+    response: {
+      subtype: "success",
+      request_id: "mcp-result",
+      response: {},
+    },
+  });
+});
+
+test("query controller forwards bridged MCP outbound messages through control requests", async () => {
+  const transport = new MockTransport();
+  let bridgeTransport:
+    | {
+        send(message: JSONRPCMessage): Promise<void>;
+        onmessage?: (message: JSONRPCMessage) => void;
+      }
+    | undefined;
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: {
+        subtype?: string;
+      };
+    };
+
+    if (message.type === "control_request" && message.request?.subtype === "initialize") {
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      });
+    }
+  };
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      mcpServers: {
+        tools: {
+          type: "sdk",
+          name: "tools",
+          instance: {
+            name: "tools",
+            tools: [],
+            async connect(bridge: {
+              send(message: JSONRPCMessage): Promise<void>;
+              onmessage?: (message: JSONRPCMessage) => void;
+            }) {
+              bridgeTransport = bridge;
+            },
+          },
+        } as never,
+      },
+    },
+  });
+
+  const startPromise = controller.start();
+  await controller.initialize();
+  expect(bridgeTransport).toBeDefined();
+
+  await bridgeTransport!.send({
+    jsonrpc: "2.0",
+    id: 7,
+    method: "tools/list",
+  } as JSONRPCMessage);
+
+  controller.close();
+  transport.finish();
+  await startPromise;
+
+  const outbound = transport.writes
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find(
+      (message) =>
+        message.type === "control_request" &&
+        (message.request as { subtype?: string } | undefined)?.subtype === "mcp_message",
+    );
+
+  expect(outbound).toEqual({
+    type: "control_request",
+    request_id: expect.any(String),
+    request: {
+      subtype: "mcp_message",
+      server_name: "tools",
+      message: {
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/list",
+      },
+    },
+  });
+});
+
 test("query controller yields known stream messages and skips unknown message types", async () => {
   const transport = new MockTransport();
   transport.enqueue({
@@ -778,3 +1172,4 @@ test("startup rejects string prompts when canUseTool is configured", async () =>
     "canUseTool callback requires streaming mode. Please provide prompt as an AsyncIterable instead of a string.",
   );
   warm.close();
+});
