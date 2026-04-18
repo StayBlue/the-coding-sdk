@@ -25,12 +25,12 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Install Claude Agent SDK
-        run: bun add --no-save @anthropic-ai/claude-agent-sdk@0.2.92
+        run: bun add --no-save @anthropic-ai/claude-agent-sdk@0.2.113
 
       - name: Check API surface coverage
         env:
           API_SURFACE_PACKAGE: "@anthropic-ai/claude-agent-sdk"
-          API_SURFACE_VERSION: "0.2.92"
+          API_SURFACE_VERSION: "0.2.113"
           API_SURFACE_BADGE_LABEL: "api surface"
           API_SURFACE_BADGE_PATH: "api-surface-badge.json"
           API_SURFACE_GIST_ID: ${{ secrets.API_SURFACE_GIST_ID }}
