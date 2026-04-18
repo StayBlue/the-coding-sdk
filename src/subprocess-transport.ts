@@ -8,10 +8,11 @@
  * Version 2.0. See the LICENSE file in the project root for details.
  */
 
-import { existsSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   CLIConnectionError,
   CLIJSONDecodeError,
@@ -23,6 +24,80 @@ import { parseStdoutMessage } from "./schemas.ts";
 import type { Options, SpawnedProcess, StdoutMessage, Transport } from "./types.ts";
 
 const DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024;
+const CLI_NOT_FOUND_MESSAGE =
+  "Claude Code not found. Install with:\n" +
+  "  npm install -g @anthropic-ai/claude-code\n" +
+  "\nIf already installed locally, try:\n" +
+  '  export PATH="$HOME/node_modules/.bin:$PATH"\n' +
+  "\nOr provide the path via SDK options:\n" +
+  '  { pathToClaudeCodeExecutable: "/path/to/claude" }';
+
+function isRegularFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isExecutableOnCurrentPlatform(path: string): boolean {
+  if (!isRegularFile(path)) {
+    return false;
+  }
+
+  if (process.platform === "win32") {
+    return true;
+  }
+
+  try {
+    accessSync(path, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findBundledCli(): string | undefined {
+  const cliName = process.platform === "win32" ? "claude.exe" : "claude";
+  const candidates = new Set([
+    fileURLToPath(new URL(`./_bundled/${cliName}`, import.meta.url)),
+    fileURLToPath(new URL(`../dist/_bundled/${cliName}`, import.meta.url)),
+  ]);
+
+  for (const candidate of candidates) {
+    if (isRegularFile(candidate)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function findExecutableOnPath(command: string): string | undefined {
+  const pathValue = process.env.PATH ?? process.env.Path;
+  if (!pathValue) {
+    return undefined;
+  }
+
+  const isWindows = process.platform === "win32";
+  const hasExtension = isWindows && /\.[^/\\]+$/.test(command);
+  const extensions =
+    isWindows && !hasExtension
+      ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+      : [""];
+
+  for (const directory of pathValue.split(delimiter)) {
+    const baseDirectory = directory || process.cwd();
+    for (const extension of extensions) {
+      const candidate = join(baseDirectory, `${command}${extension}`);
+      if (isExecutableOnCurrentPlatform(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return undefined;
+}
 
 export class SubprocessCLITransport implements Transport {
   #options: Options;
@@ -66,6 +141,9 @@ export class SubprocessCLITransport implements Transport {
       this.#stdinClosed = false;
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        if (this.#options.cwd && !existsSync(this.#options.cwd)) {
+          throw new CLIConnectionError(`Working directory does not exist: ${this.#options.cwd}`);
+        }
         throw new CLINotFoundError("Claude Code not found at", cliPath);
       }
       throw new CLIConnectionError(
@@ -230,10 +308,17 @@ export class SubprocessCLITransport implements Transport {
       return this.#options.pathToClaudeCodeExecutable;
     }
 
-    // Check well-known installation locations first; if none exist on disk, fall back
-    // to bare "claude" and let the OS resolve via PATH at spawn time.
-    //
-    // Well-known installation locations (matches Python SDK's fallback list):
+    const bundledCli = findBundledCli();
+    if (bundledCli) {
+      return bundledCli;
+    }
+
+    const pathCli = findExecutableOnPath("claude");
+    if (pathCli) {
+      return pathCli;
+    }
+
+    // Well-known installation locations (matches Python SDK's fallback list).
     const fallbackLocations = [
       join(homedir(), ".npm-global/bin/claude"),
       "/usr/local/bin/claude",
@@ -244,13 +329,12 @@ export class SubprocessCLITransport implements Transport {
     ];
 
     for (const location of fallbackLocations) {
-      if (existsSync(location)) {
+      if (isRegularFile(location)) {
         return location;
       }
     }
 
-    // Fall back to bare "claude" — lets the OS resolve via PATH at spawn time
-    return "claude";
+    throw new CLINotFoundError(CLI_NOT_FOUND_MESSAGE);
   }
 
   #buildSpawnCommand(cliPath: string): { command: string; args: string[] } {

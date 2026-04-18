@@ -11,6 +11,17 @@
 import { expect, test } from "bun:test";
 import { Readable, Writable } from "node:stream";
 import { EventEmitter } from "node:events";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { SubprocessCLITransport } from "./subprocess-transport.ts";
 import { CLIConnectionError, CLIJSONDecodeError, ProcessError } from "./errors.ts";
 import type { SpawnedProcess } from "./types.ts";
@@ -62,6 +73,34 @@ function createMockProcess(
       processExitCode = exitCode;
       emitter.emit("exit", exitCode, null);
     },
+  };
+}
+
+function createFakeExecutable(path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\nexit 0\n");
+  if (process.platform !== "win32") {
+    chmodSync(path, 0o755);
+  }
+}
+
+function getBundledCliPath(): string {
+  const cliName = process.platform === "win32" ? "claude.exe" : "claude";
+  return join(process.cwd(), "dist", "_bundled", cliName);
+}
+
+function stashFile(path: string): () => void {
+  const backupPath = `${path}.bak-${process.pid}-${Date.now()}`;
+  if (existsSync(path)) {
+    renameSync(path, backupPath);
+    return () => {
+      rmSync(path, { force: true });
+      renameSync(backupPath, path);
+    };
+  }
+
+  return () => {
+    rmSync(path, { force: true });
   };
 }
 
@@ -152,6 +191,7 @@ test("buildSpawnCommand includes model and permission flags", async () => {
   expect(capturedArgs).toContain("--max-budget-usd");
   expect(capturedArgs).toContain("10");
   expect(capturedArgs).toContain("--debug");
+});
 
 test("connect uses provided env without inheriting process.env", async () => {
   const originalMarker = process.env.CLAUDE_SDK_TEST_INHERIT;
@@ -208,6 +248,90 @@ test("buildSpawnCommand includes thinking display and session mirror flags", asy
   expect(capturedArgs).toContain("summarized");
   expect(capturedArgs).toContain("--session-mirror");
 });
+
+test("findCli prefers bundled CLI over PATH", async () => {
+  const root = mkdtempSync(join(tmpdir(), "claude-sdk-test-"));
+  const bundledPath = getBundledCliPath();
+  const restoreBundled = stashFile(bundledPath);
+  const pathCli = join(root, "path-bin", process.platform === "win32" ? "claude.exe" : "claude");
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.PATH;
+  let capturedCommand = "";
+
+  createFakeExecutable(bundledPath);
+  createFakeExecutable(pathCli);
+
+  try {
+    process.env.HOME = root;
+    process.env.PATH = dirname(pathCli);
+
+    const { process: proc } = createMockProcess();
+    const transport = new SubprocessCLITransport({
+      spawnClaudeCodeProcess: (opts) => {
+        capturedCommand = opts.command;
+        return proc;
+      },
+    });
+
+    await transport.connect();
+    expect(capturedCommand).toBe(bundledPath);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+    restoreBundled();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("findCli prefers PATH over fallback locations", async () => {
+  const root = mkdtempSync(join(tmpdir(), "claude-sdk-test-"));
+  const bundledPath = getBundledCliPath();
+  const restoreBundled = stashFile(bundledPath);
+  const pathCli = join(root, "path-bin", process.platform === "win32" ? "claude.exe" : "claude");
+  const fallbackCli = join(root, ".local", "bin", "claude");
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.PATH;
+  let capturedCommand = "";
+
+  createFakeExecutable(pathCli);
+  createFakeExecutable(fallbackCli);
+
+  try {
+    process.env.HOME = root;
+    process.env.PATH = dirname(pathCli);
+
+    const { process: proc } = createMockProcess();
+    const transport = new SubprocessCLITransport({
+      spawnClaudeCodeProcess: (opts) => {
+        capturedCommand = opts.command;
+        return proc;
+      },
+    });
+
+    await transport.connect();
+    expect(capturedCommand).toBe(pathCli);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+    restoreBundled();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("readMessages throws CLIJSONDecodeError on buffer overflow", async () => {
