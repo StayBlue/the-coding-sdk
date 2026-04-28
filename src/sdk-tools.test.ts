@@ -27,12 +27,16 @@ test("sdk MCP server lists tools and handles calls", async () => {
         },
       ],
     }),
+    {
+      searchHint: "greeting",
+    },
   );
 
   const server = createSdkMcpServer({
     name: "test-tools",
     version: "1.0.0",
     tools: [greet],
+    alwaysLoad: true,
   });
 
   const listed = await dispatchSdkMcpRequest(server.instance, {
@@ -49,6 +53,10 @@ test("sdk MCP server lists tools and handles calls", async () => {
         expect.objectContaining({
           name: "greet",
           description: "Greet someone",
+          _meta: {
+            "anthropic/alwaysLoad": true,
+            "anthropic/searchHint": "greeting",
+          },
         }),
       ],
     },

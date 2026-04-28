@@ -424,6 +424,166 @@ test("query controller fulfills hook callbacks after initialize", async () => {
   });
 });
 
+test("query controller forwards latest initialize options", async () => {
+  const transport = new MockTransport();
+  let initializeRequest:
+    | {
+        systemPrompt?: string[];
+        planModeInstructions?: string;
+        skills?: string[];
+        forwardSubagentText?: boolean;
+        promptSuggestions?: boolean;
+        agentProgressSummaries?: boolean;
+      }
+    | undefined;
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: Record<string, unknown> & { subtype?: string };
+    };
+
+    if (message.type === "control_request" && message.request?.subtype === "initialize") {
+      initializeRequest = message.request as typeof initializeRequest;
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      });
+    }
+  };
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      systemPrompt: "Keep answers terse.",
+      planModeInstructions: "Inspect only; do not edit.",
+      skills: ["docx"],
+      forwardSubagentText: true,
+      promptSuggestions: true,
+      agentProgressSummaries: true,
+    },
+  });
+
+  const startPromise = controller.start();
+  await controller.initialize();
+  transport.finish();
+  await startPromise;
+
+  expect(initializeRequest).toMatchObject({
+    systemPrompt: ["Keep answers terse."],
+    planModeInstructions: "Inspect only; do not edit.",
+    skills: ["docx"],
+    forwardSubagentText: true,
+    promptSuggestions: true,
+    agentProgressSummaries: true,
+  });
+});
+
+test("query controller readFile returns file contents and null on control errors", async () => {
+  const transport = new MockTransport();
+  const readRequests: Array<Record<string, unknown>> = [];
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: Record<string, unknown> & { subtype?: string };
+    };
+
+    if (message.type !== "control_request") {
+      return;
+    }
+
+    if (message.request?.subtype === "initialize") {
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      });
+      return;
+    }
+
+    if (message.request?.subtype === "read_file") {
+      readRequests.push(message.request);
+      transport.enqueue({
+        type: "control_response",
+        response:
+          readRequests.length === 1
+            ? {
+                subtype: "success",
+                request_id: message.request_id ?? "",
+                response: {
+                  contents: "aGVsbG8=",
+                  absPath: "/tmp/file.txt",
+                  truncated: true,
+                  encoding: "base64",
+                },
+              }
+            : {
+                subtype: "error",
+                request_id: message.request_id ?? "",
+                error: "permission denied",
+              },
+      });
+    }
+  };
+
+  const controller = new QueryController({ transport, options: {} });
+  const startPromise = controller.start();
+  await controller.initialize();
+
+  expect(
+    await controller.readFile("file.txt", {
+      maxBytes: 5,
+      encoding: "base64",
+    }),
+  ).toEqual({
+    contents: "aGVsbG8=",
+    absPath: "/tmp/file.txt",
+    truncated: true,
+    encoding: "base64",
+  });
+  expect(await controller.readFile("missing.txt")).toBeNull();
+
+  transport.finish();
+  await startPromise;
+
+  expect(readRequests).toEqual([
+    {
+      subtype: "read_file",
+      path: "file.txt",
+      max_bytes: 5,
+      encoding: "base64",
+    },
+    {
+      subtype: "read_file",
+      path: "missing.txt",
+    },
+  ]);
+});
+
 test("query controller delegates SDK MCP control requests and rejects unsupported inbound requests", async () => {
   const greet = tool(
     "greet",
@@ -1003,6 +1163,7 @@ test("query controller mirrors transcript batches into a session store", async (
 test("query controller yields mirror_error messages when session store append fails", async () => {
   const transport = new MockTransport();
   const root = "/tmp/claude-store-root";
+  let attempts = 0;
 
   transport.enqueue({
     type: "transcript_mirror",
@@ -1017,6 +1178,7 @@ test("query controller yields mirror_error messages when session store append fa
       env: { CLAUDE_CONFIG_DIR: root },
       sessionStore: {
         async append() {
+          attempts += 1;
           throw new Error("store unavailable");
         },
         async load() {
@@ -1042,6 +1204,7 @@ test("query controller yields mirror_error messages when session store append fa
       },
     }),
   });
+  expect(attempts).toBe(3);
 });
 
 test("query controller sendControlRequest times out on unresponsive CLI", async () => {

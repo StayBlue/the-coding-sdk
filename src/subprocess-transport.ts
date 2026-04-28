@@ -345,6 +345,21 @@ export class SubprocessCLITransport implements Transport {
       "stream-json",
       "--verbose",
     ];
+    let allowedTools = [...(this.#options.allowedTools ?? [])];
+
+    if (this.#options.skills !== undefined) {
+      const skillTools =
+        this.#options.skills === "all"
+          ? ["Skill"]
+          : this.#options.skills.map((skill) => `Skill(${skill})`);
+      const existing = new Set(allowedTools);
+      for (const toolName of skillTools) {
+        if (!existing.has(toolName)) {
+          existing.add(toolName);
+          allowedTools.push(toolName);
+        }
+      }
+    }
 
     if (this.#options.thinking) {
       switch (this.#options.thinking.type) {
@@ -382,8 +397,8 @@ export class SubprocessCLITransport implements Transport {
         cliArgs.push("--tools", "default");
       }
     }
-    if (this.#options.allowedTools?.length) {
-      cliArgs.push("--allowedTools", this.#options.allowedTools.join(","));
+    if (allowedTools.length > 0) {
+      cliArgs.push("--allowedTools", allowedTools.join(","));
     }
     if (this.#options.disallowedTools?.length) {
       cliArgs.push("--disallowedTools", this.#options.disallowedTools.join(","));
@@ -439,7 +454,7 @@ export class SubprocessCLITransport implements Transport {
     if (this.#options.strictMcpConfig) {
       cliArgs.push("--strict-mcp-config");
     }
-    if (this.#options.settingSources?.length) {
+    if (this.#options.settingSources) {
       cliArgs.push(`--setting-sources=${this.#options.settingSources.join(",")}`);
     }
     if (this.#options.allowDangerouslySkipPermissions) {
@@ -456,6 +471,9 @@ export class SubprocessCLITransport implements Transport {
     }
     if (this.#options.persistSession === false) {
       cliArgs.push("--no-session-persistence");
+    }
+    if (this.#options.managedSettings) {
+      cliArgs.push("--managed-settings", JSON.stringify(this.#options.managedSettings));
     }
     const settings = this.#buildSettingsValue();
     if (settings) {

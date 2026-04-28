@@ -34,7 +34,7 @@ const LOCAL_DECL_FILES = (process.env.API_SURFACE_LOCAL_DECLS ?? "dist/src/index
 const REFERENCE_DECL_PATH = process.env.API_SURFACE_REFERENCE_DECL?.trim() || null;
 const REFERENCE_LABEL = process.env.API_SURFACE_REFERENCE_LABEL?.trim() || "reference";
 const REFERENCE_PACKAGE = process.env.API_SURFACE_PACKAGE ?? "@anthropic-ai/claude-agent-sdk";
-const REFERENCE_VERSION = process.env.API_SURFACE_VERSION ?? "0.2.113";
+const REFERENCE_VERSION = process.env.API_SURFACE_VERSION ?? "0.2.121";
 const REFERENCE_DECL_FILES = (
   process.env.API_SURFACE_REFERENCE_DECLS ?? "sdk.d.ts,dist/sdk.d.ts,agentSdkTypes.d.ts"
 )

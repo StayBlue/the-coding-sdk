@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   deleteSession,
+  foldSessionSummary,
   forkSession,
   getSessionInfo,
   getSessionMessages,
@@ -39,6 +40,71 @@ afterEach(() => {
     }
   }
   delete process.env.CLAUDE_CONFIG_DIR;
+});
+
+test("foldSessionSummary tracks first prompt, titles, and tags", () => {
+  const sessionId = "550e8400-e29b-41d4-a716-446655440099";
+  const summary = foldSessionSummary(
+    undefined,
+    {
+      projectKey: "project-key",
+      sessionId,
+    },
+    [
+      {
+        type: "user",
+        sessionId,
+        timestamp: "2026-04-03T00:00:00.000Z",
+        message: {
+          role: "user",
+          content: "hello there",
+        },
+      },
+      {
+        type: "custom-title",
+        sessionId,
+        customTitle: "Tracked session",
+      },
+      {
+        type: "tag",
+        sessionId,
+        tag: "demo",
+      },
+    ],
+    { mtime: 100 },
+  );
+
+  expect(summary).toEqual({
+    sessionId,
+    mtime: 100,
+    data: {
+      createdAt: Date.parse("2026-04-03T00:00:00.000Z"),
+      firstPrompt: "hello there",
+      firstPromptLocked: true,
+      customTitle: "Tracked session",
+      tag: "demo",
+      isSidechain: false,
+    },
+  });
+
+  const clearedTag = foldSessionSummary(
+    summary,
+    {
+      projectKey: "project-key",
+      sessionId,
+    },
+    [
+      {
+        type: "tag",
+        sessionId,
+        tag: "",
+      },
+    ],
+    { mtime: 101 },
+  );
+
+  expect(clearedTag.mtime).toBe(101);
+  expect(clearedTag.data.tag).toBeUndefined();
 });
 
 test("session helpers list, read, mutate, and fork sessions", async () => {

@@ -193,8 +193,6 @@ export type McpSetServersResult = {
   added: string[];
   removed: string[];
   errors: Record<string, string>;
-  /** SDK MCP servers that failed to connect during this call. */
-  failedServers?: string[];
 };
 
 /** Prompt request shown when the runtime asks the host to choose from options. */
@@ -266,7 +264,7 @@ export type SettingSource = "user" | "project" | "local";
 export type SdkBeta = "context-1m-2025-08-07";
 
 /** Model effort levels accepted by Claude Code. */
-export type EffortLevel = "low" | "medium" | "high" | "max";
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 /** Account information returned by runtime introspection APIs. */
 export type AccountInfo = {
@@ -424,6 +422,7 @@ export type PostToolUseHookInput = BaseHookInput & {
   tool_input: unknown;
   tool_response: unknown;
   tool_use_id: string;
+  duration_ms?: number;
 };
 
 /** Hook payload emitted after a tool call fails. */
@@ -434,6 +433,7 @@ export type PostToolUseFailureHookInput = BaseHookInput & {
   tool_use_id: string;
   error: string;
   is_interrupt?: boolean;
+  duration_ms?: number;
 };
 
 /** Hook payload for a runtime notification. */
@@ -460,6 +460,20 @@ export type PostCompactHookInput = BaseHookInput & {
   compact_summary: string;
 };
 
+/** Single tool invocation recorded by the `PostToolBatch` hook. */
+export type PostToolBatchToolCall = {
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id: string;
+  tool_response?: unknown;
+};
+
+/** Hook payload emitted after a batch of tool calls completes. */
+export type PostToolBatchHookInput = BaseHookInput & {
+  hook_event_name: "PostToolBatch";
+  tool_calls: PostToolBatchToolCall[];
+};
+
 /** Hook payload for session shutdown. */
 export type SessionEndHookInput = BaseHookInput & {
   hook_event_name: "SessionEnd";
@@ -483,6 +497,17 @@ export type SetupHookInput = BaseHookInput & {
 /** Hook payload emitted when the user submits a prompt. */
 export type UserPromptSubmitHookInput = BaseHookInput & {
   hook_event_name: "UserPromptSubmit";
+  prompt: string;
+  session_title?: string;
+};
+
+/** Hook payload emitted after a prompt expansion step. */
+export type UserPromptExpansionHookInput = BaseHookInput & {
+  hook_event_name: "UserPromptExpansion";
+  expansion_type: "slash_command" | "mcp_prompt";
+  command_name: string;
+  command_args: string;
+  command_source?: string;
   prompt: string;
 };
 
@@ -602,6 +627,12 @@ export type UserPromptSubmitHookSpecificOutput = {
   sessionTitle?: string;
 };
 
+/** Hook-specific output shape for `UserPromptExpansion`. */
+export type UserPromptExpansionHookSpecificOutput = {
+  hookEventName: "UserPromptExpansion";
+  additionalContext?: string;
+};
+
 /** Hook-specific output shape for `SessionStart`. */
 export type SessionStartHookSpecificOutput = {
   hookEventName: "SessionStart";
@@ -626,7 +657,14 @@ export type SubagentStartHookSpecificOutput = {
 export type PostToolUseHookSpecificOutput = {
   hookEventName: "PostToolUse";
   additionalContext?: string;
+  updatedToolOutput?: unknown;
   updatedMCPToolOutput?: unknown;
+};
+
+/** Hook-specific output shape for `PostToolBatch`. */
+export type PostToolBatchHookSpecificOutput = {
+  hookEventName: "PostToolBatch";
+  additionalContext?: string;
 };
 
 /** Hook-specific output shape for `PostToolUseFailure`. */
@@ -700,6 +738,7 @@ export type HookInput =
   | PreToolUseHookInput
   | PostToolUseHookInput
   | PostToolUseFailureHookInput
+  | PostToolBatchHookInput
   | PermissionDeniedHookInput
   | ConfigChangeHookInput
   | CwdChangedHookInput
@@ -707,6 +746,7 @@ export type HookInput =
   | ElicitationResultHookInput
   | FileChangedHookInput
   | UserPromptSubmitHookInput
+  | UserPromptExpansionHookInput
   | SessionStartHookInput
   | SessionEndHookInput
   | StopHookInput
@@ -736,10 +776,12 @@ export type SyncHookJSONOutput = {
   hookSpecificOutput?:
     | PreToolUseHookSpecificOutput
     | UserPromptSubmitHookSpecificOutput
+    | UserPromptExpansionHookSpecificOutput
     | SessionStartHookSpecificOutput
     | SetupHookSpecificOutput
     | SubagentStartHookSpecificOutput
     | PostToolUseHookSpecificOutput
+    | PostToolBatchHookSpecificOutput
     | PostToolUseFailureHookSpecificOutput
     | PermissionDeniedHookSpecificOutput
     | NotificationHookSpecificOutput
@@ -892,6 +934,7 @@ export type McpHttpServerConfig = {
   url: string;
   headers?: Record<string, string>;
   tools?: McpServerToolPolicy[];
+  alwaysLoad?: boolean;
 };
 
 /** MCP server configuration for Server-Sent Events transport. */
@@ -900,14 +943,16 @@ export type McpSSEServerConfig = {
   url: string;
   headers?: Record<string, string>;
   tools?: McpServerToolPolicy[];
+  alwaysLoad?: boolean;
 };
 
 /** MCP server configuration for a stdio-spawned server process. */
 export type McpStdioServerConfig = {
-  type: "stdio";
+  type?: "stdio";
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  alwaysLoad?: boolean;
 };
 
 /** In-memory SDK representation of an MCP server and its registered tools. */
@@ -915,6 +960,7 @@ export interface SdkMcpServerInstance {
   name: string;
   version?: string;
   tools: Array<SdkMcpToolDefinition>;
+  alwaysLoad?: boolean;
 }
 
 /** Identifier-only SDK MCP server reference used in transport-facing config. */
@@ -965,6 +1011,7 @@ export type SlashCommand = {
   name: string;
   description: string;
   argumentHint: string;
+  aliases?: string[];
 };
 
 /** Model capability metadata returned by the runtime. */
@@ -973,7 +1020,7 @@ export type ModelInfo = {
   displayName: string;
   description: string;
   supportsEffort?: boolean;
-  supportedEffortLevels?: ("low" | "medium" | "high" | "max")[];
+  supportedEffortLevels?: ("low" | "medium" | "high" | "xhigh" | "max")[];
   supportsAdaptiveThinking?: boolean;
   supportsFastMode?: boolean;
   supportsAutoMode?: boolean;
@@ -1017,11 +1064,19 @@ export type SessionStoreEntry = {
   [k: string]: unknown;
 };
 
+/** Incrementally maintained metadata for a mirrored session transcript. */
+export type SessionSummaryEntry = {
+  sessionId: string;
+  mtime: number;
+  data: Record<string, unknown>;
+};
+
 /** Adapter for mirroring or loading Claude Code transcripts from external storage. */
 export type SessionStore = {
   append(key: SessionKey, entries: SessionStoreEntry[]): Promise<void>;
   load(key: SessionKey): Promise<SessionStoreEntry[] | null>;
   listSessions?(projectKey: string): Promise<Array<{ sessionId: string; mtime: number }>>;
+  listSessionSummaries?(projectKey: string): Promise<SessionSummaryEntry[]>;
   delete?(key: SessionKey): Promise<void>;
   listSubkeys?(key: { projectKey: string; sessionId: string }): Promise<string[]>;
 };
@@ -1054,6 +1109,7 @@ export type Options = {
   loadTimeoutMs?: number;
   includeHookEvents?: boolean;
   includePartialMessages?: boolean;
+  forwardSubagentText?: boolean;
   thinking?: ThinkingConfig;
   effort?: EffortLevel;
   /**
@@ -1068,6 +1124,7 @@ export type Options = {
   outputFormat?: OutputFormat;
   pathToClaudeCodeExecutable?: string;
   permissionMode?: PermissionMode;
+  planModeInstructions?: string;
   allowDangerouslySkipPermissions?: boolean;
   permissionPromptToolName?: string;
   plugins?: SdkPluginConfig[];
@@ -1078,7 +1135,9 @@ export type Options = {
   resumeSessionAt?: string;
   sandbox?: SandboxSettings;
   settings?: string | Settings;
+  managedSettings?: Settings;
   settingSources?: SettingSource[];
+  skills?: string[] | "all";
   debug?: boolean;
   debugFile?: string;
   stderr?: (data: string) => void;
@@ -1573,8 +1632,6 @@ export type SDKControlInitializeResponse = {
   models: ModelInfo[];
   account: AccountInfo;
   fast_mode_state?: FastModeState;
-  /** SDK MCP servers that failed to connect during initialization. */
-  failedSdkServers?: string[];
 };
 
 /** Detailed token breakdown returned by the context-usage control request. */
@@ -1670,6 +1727,14 @@ export type SDKControlGetContextUsageResponse = {
   } | null;
 };
 
+/** File contents returned by the remote sidebar read-file helper. */
+export type SDKControlReadFileResponse = {
+  contents: string;
+  absPath: string;
+  truncated?: boolean;
+  encoding?: "base64";
+};
+
 export type RewindFilesOptions = {
   dryRun?: boolean;
 };
@@ -1758,15 +1823,12 @@ export type GetSubagentMessagesOptions = {
   dir?: string;
   limit?: number;
   offset?: number;
-  includeSystemMessages?: boolean;
   sessionStore?: SessionStore;
 };
 
 /** Options for listing subagent transcripts beneath a session. */
 export type ListSubagentsOptions = {
   dir?: string;
-  limit?: number;
-  offset?: number;
   sessionStore?: SessionStore;
 };
 
@@ -1861,6 +1923,10 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   supportedAgents(): Promise<AgentInfo[]>;
   mcpServerStatus(): Promise<McpServerStatus[]>;
   getContextUsage(): Promise<SDKControlGetContextUsageResponse>;
+  readFile(
+    path: string,
+    options?: { maxBytes?: number; encoding?: "utf-8" | "base64" },
+  ): Promise<SDKControlReadFileResponse | null>;
   accountInfo(): Promise<AccountInfo>;
   rewindFiles(userMessageId: string, options?: RewindFilesOptions): Promise<RewindFilesResult>;
   reconnectMcpServer(serverName: string): Promise<void>;
@@ -1893,8 +1959,11 @@ export type SDKControlRequestInner =
       excludeDynamicSections?: boolean;
       agents?: Record<string, AgentDefinition>;
       title?: string;
+      planModeInstructions?: string;
+      skills?: string[];
       promptSuggestions?: boolean;
       agentProgressSummaries?: boolean;
+      forwardSubagentText?: boolean;
     }
   | {
       subtype: "interrupt";
@@ -1967,6 +2036,12 @@ export type SDKControlRequestInner =
     }
   | {
       subtype: "get_context_usage";
+    }
+  | {
+      subtype: "read_file";
+      path: string;
+      max_bytes?: number;
+      encoding?: "utf-8" | "base64";
     }
   | {
       subtype: "elicitation";

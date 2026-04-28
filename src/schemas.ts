@@ -103,8 +103,11 @@ const zInitializeControlRequest = z.object({
   excludeDynamicSections: z.boolean().optional(),
   agents: z.record(z.string(), z.unknown()).optional(),
   title: z.string().optional(),
+  planModeInstructions: z.string().optional(),
+  skills: z.array(z.string()).optional(),
   promptSuggestions: z.boolean().optional(),
   agentProgressSummaries: z.boolean().optional(),
+  forwardSubagentText: z.boolean().optional(),
 });
 
 const zCanUseToolRequest = z.object({
@@ -170,10 +173,22 @@ const zControlRequestInnerSchema = z.discriminatedUnion("subtype", [
     dry_run: z.boolean().optional(),
   }),
   z.object({ subtype: z.literal("set_model"), model: z.string().optional() }),
+  z.object({
+    subtype: z.literal("set_max_thinking_tokens"),
+    max_thinking_tokens: z.number().nullable(),
+  }),
+  z.object({ subtype: z.literal("apply_flag_settings"), settings: zRecordUnknown }),
   z.object({ subtype: z.literal("set_permission_mode"), mode: zPermissionMode }),
+  z.object({ subtype: z.literal("seed_read_state"), path: z.string(), mtime: z.number() }),
   z.object({ subtype: z.literal("stop_task"), task_id: z.string() }),
   zHookCallbackRequest,
   z.object({ subtype: z.literal("get_context_usage") }),
+  z.object({
+    subtype: z.literal("read_file"),
+    path: z.string(),
+    max_bytes: z.number().optional(),
+    encoding: z.union([z.literal("utf-8"), z.literal("base64")]).optional(),
+  }),
   zElicitationRequest,
   z.object({
     subtype: z.literal("mcp_set_servers"),

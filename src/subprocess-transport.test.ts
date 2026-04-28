@@ -222,6 +222,44 @@ test("connect uses provided env without inheriting process.env", async () => {
   }
 });
 
+test("buildSpawnCommand derives skill tool permissions and serializes managed settings", async () => {
+  let capturedArgs: string[] = [];
+
+  const { process: proc } = createMockProcess();
+  const transport = new SubprocessCLITransport({
+    pathToClaudeCodeExecutable: "/fake/claude",
+    allowedTools: ["Read"],
+    skills: ["docx", "pdf"],
+    managedSettings: {
+      sandbox: {
+        network: {
+          allowManagedDomainsOnly: true,
+        },
+      },
+    },
+    settingSources: [],
+    spawnClaudeCodeProcess: (opts) => {
+      capturedArgs = opts.args;
+      return proc;
+    },
+  });
+  await transport.connect();
+
+  const allowedTools = capturedArgs[capturedArgs.indexOf("--allowedTools") + 1];
+  const managedSettings = capturedArgs[capturedArgs.indexOf("--managed-settings") + 1];
+
+  expect(allowedTools).toBe("Read,Skill(docx),Skill(pdf)");
+  expect(capturedArgs).toContain("--setting-sources=");
+  expect(managedSettings).toBeDefined();
+  expect(JSON.parse(managedSettings!)).toEqual({
+    sandbox: {
+      network: {
+        allowManagedDomainsOnly: true,
+      },
+    },
+  });
+});
+
 test("buildSpawnCommand includes thinking display and session mirror flags", async () => {
   let capturedArgs: string[] = [];
 

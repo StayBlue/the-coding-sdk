@@ -50,6 +50,7 @@ import type {
   SessionMutationOptions,
   SessionStore,
   SessionStoreEntry,
+  SessionSummaryEntry,
 } from "./types.ts";
 
 const LITE_READ_BUF_SIZE = 65_536;
@@ -58,8 +59,17 @@ const MAX_SANITIZED_LENGTH = 200;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SKIP_FIRST_PROMPT_RE =
   /^(?:<local-command-stdout>|<session-start-hook>|<tick>|<goal>|\[Request interrupted by user[^\]]*\]|\s*<ide_opened_file>[\s\S]*<\/ide_opened_file>\s*$|\s*<ide_selection>[\s\S]*<\/ide_selection>\s*$)/;
+const SUMMARY_SKIP_PROMPT_RE = /^(?:\s*<[a-z][\w-]*[\s>]|\[Request interrupted by user[^\]]*\])/;
 const COMMAND_NAME_RE = /<command-name>(.*?)<\/command-name>/;
+const BASH_INPUT_RE = /<bash-input>([\s\S]*?)<\/bash-input>/;
 const SANITIZE_RE = /[^a-zA-Z0-9]/g;
+const SUMMARY_LAST_WRITE_FIELDS = {
+  customTitle: "customTitle",
+  aiTitle: "aiTitle",
+  lastPrompt: "lastPrompt",
+  summary: "summaryHint",
+  gitBranch: "gitBranch",
+} as const;
 
 type SessionClassOptions = SDKSessionOptions & {
   sessionId?: string;
@@ -183,9 +193,15 @@ type LiteSessionFile = {
 export class InMemorySessionStore implements SessionStore {
   private store = new Map<string, SessionStoreEntry[]>();
   private mtimes = new Map<string, number>();
+  private summaries = new Map<string, SessionSummaryEntry>();
+  private lastMtime = 0;
 
   private keyToString(key: SessionKey): string {
     return `${key.projectKey}\0${key.sessionId}\0${key.subpath ?? ""}`;
+  }
+
+  private summaryKey(key: { projectKey: string; sessionId: string }): string {
+    return `${key.projectKey}\0${key.sessionId}`;
   }
 
   async append(key: SessionKey, entries: SessionStoreEntry[]): Promise<void> {
@@ -197,7 +213,16 @@ export class InMemorySessionStore implements SessionStore {
     const current = this.store.get(storeKey) ?? [];
     current.push(...cloneEntries(entries));
     this.store.set(storeKey, current);
-    this.mtimes.set(storeKey, Date.now());
+    const mtime = Math.max(Date.now(), this.lastMtime + 1);
+    this.lastMtime = mtime;
+    this.mtimes.set(storeKey, mtime);
+
+    if (!key.subpath) {
+      this.summaries.set(
+        this.summaryKey(key),
+        foldSessionSummary(this.summaries.get(this.summaryKey(key)), key, entries, { mtime }),
+      );
+    }
   }
 
   async load(key: SessionKey): Promise<SessionStoreEntry[] | null> {
@@ -223,6 +248,17 @@ export class InMemorySessionStore implements SessionStore {
     return sessions;
   }
 
+  async listSessionSummaries(projectKey: string): Promise<SessionSummaryEntry[]> {
+    const prefix = `${projectKey}\0`;
+    const summaries: SessionSummaryEntry[] = [];
+    for (const [summaryKey, summary] of this.summaries) {
+      if (summaryKey.startsWith(prefix)) {
+        summaries.push({ ...summary, data: { ...summary.data } });
+      }
+    }
+    return summaries;
+  }
+
   async delete(key: SessionKey): Promise<void> {
     if (key.subpath) {
       const storeKey = this.keyToString(key);
@@ -232,6 +268,7 @@ export class InMemorySessionStore implements SessionStore {
     }
 
     const prefix = `${key.projectKey}\0${key.sessionId}\0`;
+    this.summaries.delete(this.summaryKey(key));
     for (const storeKey of this.store.keys()) {
       if (storeKey.startsWith(prefix)) {
         this.store.delete(storeKey);
@@ -276,6 +313,8 @@ export class InMemorySessionStore implements SessionStore {
   clear(): void {
     this.store.clear();
     this.mtimes.clear();
+    this.summaries.clear();
+    this.lastMtime = 0;
   }
 }
 
@@ -390,7 +429,7 @@ export async function listSubagents(
     .filter((name) => name.startsWith("agent-") && name.endsWith(".jsonl"))
     .map((name) => name.slice("agent-".length, -".jsonl".length))
     .sort((a, b) => a.localeCompare(b));
-  return paginate(agents, options.limit, options.offset);
+  return agents;
 }
 
 /** Returns transcript messages for a specific subagent session. */
@@ -416,9 +455,7 @@ export async function getSubagentMessages(
   const entries = parseTranscript(readSessionFileContent(transcriptPath));
   const chain = buildConversationChain(entries);
   return paginate(
-    chain
-      .filter((entry) => isVisibleMessage(entry, Boolean(options.includeSystemMessages)))
-      .map(toSessionMessage),
+    chain.filter((entry) => isVisibleMessage(entry, false)).map(toSessionMessage),
     options.limit,
     options.offset,
   );
@@ -650,6 +687,71 @@ function entriesToContent(entries: SessionStoreEntry[]): string {
   return entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
 }
 
+type SessionSummaryData = Record<string, unknown>;
+
+type SessionSummaryScratch = {
+  commandFallback: string;
+};
+
+/**
+ * Fold a batch of appended transcript entries into a session summary sidecar.
+ */
+export function foldSessionSummary(
+  prev: SessionSummaryEntry | undefined,
+  key: SessionKey,
+  entries: SessionStoreEntry[],
+  options?: { mtime?: number },
+): SessionSummaryEntry {
+  const mtime = options?.mtime ?? prev?.mtime ?? 0;
+  const next: SessionSummaryEntry = prev
+    ? {
+        sessionId: prev.sessionId,
+        mtime,
+        data: { ...prev.data },
+      }
+    : {
+        sessionId: key.sessionId,
+        mtime,
+        data: {},
+      };
+
+  const data = next.data;
+  for (const entry of entries) {
+    const createdAt = parseTimestampToEpoch(entry.timestamp);
+    if (data.isSidechain === undefined) {
+      data.isSidechain = entry.isSidechain === true;
+    }
+    if (data.createdAt === undefined && createdAt != null) {
+      data.createdAt = createdAt;
+    }
+    if (data.cwd === undefined) {
+      const cwd = entry.cwd;
+      if (typeof cwd === "string" && cwd.length > 0) {
+        data.cwd = cwd;
+      }
+    }
+
+    maybeCaptureFirstPrompt(data, entry);
+    for (const [source, target] of Object.entries(SUMMARY_LAST_WRITE_FIELDS)) {
+      const value = entry[source];
+      if (typeof value === "string") {
+        data[target] = value;
+      }
+    }
+
+    if (entry.type === "tag") {
+      const tag = entry.tag;
+      if (typeof tag === "string" && tag.length > 0) {
+        data.tag = tag;
+      } else {
+        delete data.tag;
+      }
+    }
+  }
+
+  return next;
+}
+
 function readSessionInfoFromEntries(
   sessionId: string,
   entries: SessionStoreEntry[],
@@ -670,17 +772,119 @@ function readSessionInfoFromEntries(
   return buildSessionInfo(lite, sessionId, `${sessionId}.jsonl`);
 }
 
+function sessionInfoFromSummary(
+  summary: SessionSummaryEntry,
+  fallbackCwd?: string,
+): SDKSessionInfo | undefined {
+  const data = summary.data;
+  if (data.isSidechain === true) {
+    return undefined;
+  }
+
+  const firstPromptValue =
+    data.firstPromptLocked === true ? data.firstPrompt : data.commandFallback;
+  const firstPrompt = typeof firstPromptValue === "string" ? firstPromptValue : undefined;
+  const customTitle =
+    typeof data.customTitle === "string"
+      ? data.customTitle
+      : typeof data.aiTitle === "string"
+        ? data.aiTitle
+        : undefined;
+  const summaryText =
+    customTitle ||
+    (typeof data.lastPrompt === "string" ? data.lastPrompt : undefined) ||
+    (typeof data.summaryHint === "string" ? data.summaryHint : undefined) ||
+    firstPrompt;
+
+  if (!summaryText) {
+    return undefined;
+  }
+
+  return {
+    sessionId: summary.sessionId,
+    summary: summaryText,
+    lastModified: summary.mtime,
+    ...optionalProperty("customTitle", customTitle),
+    ...optionalProperty("firstPrompt", firstPrompt),
+    ...optionalProperty("gitBranch", asOptionalString(data.gitBranch)),
+    ...optionalProperty("cwd", asOptionalString(data.cwd) ?? fallbackCwd),
+    ...optionalProperty("tag", normalizeOptionalTag(asOptionalString(data.tag))),
+    ...optionalProperty("createdAt", asOptionalNumber(data.createdAt)),
+  };
+}
+
 async function listSessionsFromStore(
   store: SessionStore,
   options: ListSessionsOptions,
 ): Promise<SDKSessionInfo[]> {
+  const projectKey = storeKey("", options.dir).projectKey;
+  if (store.listSessionSummaries) {
+    const summaries = await store.listSessionSummaries(projectKey);
+    const listed = store.listSessions
+      ? new Map((await store.listSessions(projectKey)).map((entry) => [entry.sessionId, entry]))
+      : undefined;
+    const combined: Array<{ sessionId: string; mtime: number; info?: SDKSessionInfo | null }> = [];
+
+    for (const summary of summaries) {
+      const listedEntry = listed?.get(summary.sessionId);
+      if (listed && !listedEntry) {
+        continue;
+      }
+      const effectiveMtime =
+        listedEntry && listedEntry.mtime > summary.mtime ? listedEntry.mtime : summary.mtime;
+      const info =
+        listedEntry && listedEntry.mtime > summary.mtime
+          ? undefined
+          : sessionInfoFromSummary(summary, options.dir);
+      combined.push({
+        sessionId: summary.sessionId,
+        mtime: effectiveMtime,
+        ...(info !== undefined ? { info } : {}),
+      });
+    }
+
+    if (listed) {
+      const seen = new Set(summaries.map((summary) => summary.sessionId));
+      for (const [sessionId, entry] of listed) {
+        if (!seen.has(sessionId)) {
+          combined.push({ sessionId, mtime: entry.mtime });
+        }
+      }
+    } else if (summaries.length === 0) {
+      return [];
+    }
+
+    combined.sort((left, right) => right.mtime - left.mtime);
+    const page = paginate(combined, options.limit, options.offset);
+    const sessions: SDKSessionInfo[] = [];
+
+    for (const entry of page) {
+      if (entry.info !== undefined) {
+        if (entry.info) {
+          sessions.push(entry.info);
+        }
+        continue;
+      }
+
+      const loaded = await store.load({ projectKey, sessionId: entry.sessionId });
+      if (!loaded || loaded.length === 0) {
+        continue;
+      }
+      const info = readSessionInfoFromEntries(entry.sessionId, loaded, entry.mtime);
+      if (info) {
+        sessions.push(info);
+      }
+    }
+
+    return sessions;
+  }
+
   if (!store.listSessions) {
     throw new ClaudeSDKError(
       "sessionStore.listSessions is not implemented -- cannot list sessions. Provide a store with a listSessions() method.",
     );
   }
 
-  const projectKey = storeKey("", options.dir).projectKey;
   const listed = await store.listSessions(projectKey);
   const sorted = listed.slice().sort((left, right) => right.mtime - left.mtime);
   const page = paginate(sorted, options.limit, options.offset);
@@ -760,7 +964,7 @@ async function listSubagentsFromStore(
       }),
     ),
   ].sort((a, b) => a.localeCompare(b));
-  return paginate(agents, options.limit, options.offset);
+  return agents;
 }
 
 async function getSubagentMessagesFromStore(
@@ -793,9 +997,7 @@ async function getSubagentMessagesFromStore(
   }
   const chain = buildConversationChain(parseTranscript(entriesToContent(entries)));
   return paginate(
-    chain
-      .filter((entry) => isVisibleMessage(entry, Boolean(options.includeSystemMessages)))
-      .map(toSessionMessage),
+    chain.filter((entry) => isVisibleMessage(entry, false)).map(toSessionMessage),
     options.limit,
     options.offset,
   );
@@ -1287,6 +1489,80 @@ function extractLastJsonStringField(text: string, key: string): string | undefin
   return last;
 }
 
+function maybeCaptureFirstPrompt(summary: SessionSummaryData, entry: SessionStoreEntry): void {
+  if (summary.firstPromptLocked === true) {
+    return;
+  }
+
+  const scratch: SessionSummaryScratch = {
+    commandFallback: typeof summary.commandFallback === "string" ? summary.commandFallback : "",
+  };
+  const firstPrompt = extractFirstPromptFromEntry(entry, scratch);
+
+  if (scratch.commandFallback && typeof summary.commandFallback !== "string") {
+    summary.commandFallback = scratch.commandFallback;
+  }
+  if (firstPrompt !== undefined) {
+    summary.firstPrompt = firstPrompt;
+    summary.firstPromptLocked = true;
+  }
+}
+
+function extractFirstPromptFromEntry(
+  entry: SessionStoreEntry,
+  scratch: SessionSummaryScratch,
+): string | undefined {
+  if (entry.type !== "user" || entry.isMeta === true || entry.isCompactSummary === true) {
+    return undefined;
+  }
+
+  const message = parseRecordUnknown(entry.message);
+  const content = message?.content;
+  const texts: string[] = [];
+  if (typeof content === "string") {
+    texts.push(content);
+  } else if (Array.isArray(content)) {
+    for (const item of content) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      const record = item as Record<string, unknown>;
+      if (record.type === "tool_result") {
+        return undefined;
+      }
+      if (record.type === "text" && typeof record.text === "string") {
+        texts.push(record.text);
+      }
+    }
+  }
+
+  for (const text of texts) {
+    const normalized = text.replace(/\n/g, " ").trim();
+    if (!normalized) {
+      continue;
+    }
+
+    const commandMatch = COMMAND_NAME_RE.exec(normalized);
+    if (commandMatch?.[1]) {
+      scratch.commandFallback ||= commandMatch[1];
+      continue;
+    }
+
+    const bashMatch = BASH_INPUT_RE.exec(normalized);
+    if (bashMatch?.[1]) {
+      return `! ${bashMatch[1].trim()}`;
+    }
+
+    if (SUMMARY_SKIP_PROMPT_RE.test(normalized)) {
+      continue;
+    }
+
+    return normalized.length > 200 ? `${normalized.slice(0, 200).trimEnd()}…` : normalized;
+  }
+
+  return undefined;
+}
+
 function extractFirstPromptFromHead(head: string): string | undefined {
   let commandFallback = "";
 
@@ -1351,6 +1627,14 @@ function normalizeOptionalTag(value: string | undefined): string | null {
     return null;
   }
   return value;
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function asOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
 }
 
 function parseTimestampToEpoch(value?: string): number | null {

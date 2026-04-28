@@ -44,6 +44,7 @@ import type {
   RewindFilesResult,
   SDKControlGetContextUsageResponse,
   SDKControlInitializeResponse,
+  SDKControlReadFileResponse,
   SDKControlReloadPluginsResponse,
   SDKControlRequest,
   SDKControlRequestInner,
@@ -119,13 +120,15 @@ export class QueryController implements Query {
   }
 
   async initialize(): Promise<SDKControlInitializeResponse> {
-    const failedSdkServers = await this.#connectSdkMcpBridges();
+    await this.#connectSdkMcpBridges();
 
     const hooks = this.#convertHooks();
     const systemPrompt =
-      typeof this.#options.systemPrompt === "string" || Array.isArray(this.#options.systemPrompt)
-        ? this.#options.systemPrompt
-        : undefined;
+      typeof this.#options.systemPrompt === "string"
+        ? [this.#options.systemPrompt]
+        : Array.isArray(this.#options.systemPrompt)
+          ? this.#options.systemPrompt
+          : undefined;
     const appendSystemPrompt =
       typeof this.#options.systemPrompt === "object" && !Array.isArray(this.#options.systemPrompt)
         ? this.#options.systemPrompt.append
@@ -150,20 +153,24 @@ export class QueryController implements Query {
         ...(excludeDynamicSections != null ? { excludeDynamicSections } : {}),
         ...(this.#options.agents ? { agents: this.#options.agents } : {}),
         ...(this.#options.title ? { title: this.#options.title } : {}),
+        ...(this.#options.planModeInstructions !== undefined
+          ? { planModeInstructions: this.#options.planModeInstructions }
+          : {}),
+        ...(Array.isArray(this.#options.skills) ? { skills: this.#options.skills } : {}),
         ...(this.#options.promptSuggestions != null
           ? { promptSuggestions: this.#options.promptSuggestions }
           : {}),
         ...(this.#options.agentProgressSummaries != null
           ? { agentProgressSummaries: this.#options.agentProgressSummaries }
           : {}),
+        ...(this.#options.forwardSubagentText != null
+          ? { forwardSubagentText: this.#options.forwardSubagentText }
+          : {}),
       },
       60_000,
     );
 
-    this.#initializationResponse = {
-      ...response,
-      ...(failedSdkServers.length > 0 ? { failedSdkServers } : {}),
-    };
+    this.#initializationResponse = response;
     return this.#initializationResponse;
   }
 
@@ -230,6 +237,23 @@ export class QueryController implements Query {
     });
   }
 
+  async readFile(
+    path: string,
+    options?: { maxBytes?: number; encoding?: "utf-8" | "base64" },
+  ): Promise<SDKControlReadFileResponse | null> {
+    await this.#ready();
+    try {
+      return await this.#sendControlRequest<SDKControlReadFileResponse>({
+        subtype: "read_file",
+        path,
+        ...(options?.maxBytes != null ? { max_bytes: options.maxBytes } : {}),
+        ...(options?.encoding ? { encoding: options.encoding } : {}),
+      });
+    } catch {
+      return null;
+    }
+  }
+
   async setMcpServers(servers: Record<string, McpServerConfig>): Promise<McpSetServersResult> {
     await this.#ready();
 
@@ -257,7 +281,6 @@ export class QueryController implements Query {
       }
     }
 
-    const failedServers: string[] = [];
     for (const [name, server] of sdkServers) {
       if (oldNames.has(name)) {
         await this.#disconnectSdkMcpServer(name);
@@ -272,7 +295,6 @@ export class QueryController implements Query {
           );
         } catch {
           sdkServers.delete(name);
-          failedServers.push(name);
         }
       }
     }
@@ -282,15 +304,10 @@ export class QueryController implements Query {
       sdkStubs[name] = { type: "sdk", name };
     }
 
-    const result = await this.#sendControlRequest<McpSetServersResult>({
+    return this.#sendControlRequest<McpSetServersResult>({
       subtype: "mcp_set_servers",
       servers: { ...processServers, ...sdkStubs } as Record<string, McpServerConfig>,
     });
-
-    if (failedServers.length > 0) {
-      return { ...result, failedServers };
-    }
-    return result;
   }
 
   async reloadPlugins(): Promise<SDKControlReloadPluginsResponse> {
@@ -789,17 +806,24 @@ export class QueryController implements Query {
       return;
     }
 
-    try {
-      await store.append(key, message.entries);
-    } catch (error) {
-      this.#queue.push({
-        type: "system",
-        subtype: "mirror_error",
-        error: error instanceof Error ? error.message : String(error),
-        key,
-        uuid: randomUUID(),
-        session_id: key.sessionId,
-      });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await store.append(key, message.entries);
+        return;
+      } catch (error) {
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+          continue;
+        }
+        this.#queue.push({
+          type: "system",
+          subtype: "mirror_error",
+          error: error instanceof Error ? error.message : String(error),
+          key,
+          uuid: randomUUID(),
+          session_id: key.sessionId,
+        });
+      }
     }
   }
 

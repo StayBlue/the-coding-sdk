@@ -37,11 +37,11 @@ export function tool<Schema extends AnyZodRawShape>(
   },
 ): SdkMcpToolDefinition<Schema> {
   const meta: Record<string, unknown> = {};
-  if (extras?.searchHint != null) {
-    meta.searchHint = extras.searchHint;
+  if (extras?.searchHint) {
+    meta["anthropic/searchHint"] = extras.searchHint;
   }
-  if (extras?.alwaysLoad != null) {
-    meta.alwaysLoad = extras.alwaysLoad;
+  if (extras?.alwaysLoad) {
+    meta["anthropic/alwaysLoad"] = true;
   }
 
   return {
@@ -59,11 +59,13 @@ export function createSdkMcpServer(options: {
   name: string;
   version?: string;
   tools?: Array<SdkMcpToolDefinition>;
+  alwaysLoad?: boolean;
 }): McpSdkServerConfigWithInstance {
   const instance: SdkMcpServerInstance = {
     name: options.name,
     tools: [...(options.tools ?? [])],
     ...(options.version ? { version: options.version } : {}),
+    ...(options.alwaysLoad ? { alwaysLoad: true } : {}),
   };
 
   return {
@@ -119,7 +121,9 @@ export async function dispatchSdkMcpRequest(
             description: toolDef.description,
             inputSchema: shapeToJsonSchema(toolDef.inputSchema),
             annotations: toolDef.annotations,
-            _meta: toolDef._meta,
+            _meta: server.alwaysLoad
+              ? { "anthropic/alwaysLoad": true, ...toolDef._meta }
+              : toolDef._meta,
           })),
         },
       };
