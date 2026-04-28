@@ -1,6 +1,6 @@
 {
   "name": "@stayblue/the-coding-sdk",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publish": {
     "exclude": [
       ".github",
