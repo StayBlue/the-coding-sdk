@@ -27,6 +27,7 @@ import {
 import { SubprocessCLITransport } from "./subprocess-transport.ts";
 import type {
   AccountInfo,
+  AgentDefinition,
   AgentInfo,
   ElicitationRequest,
   HookCallback,
@@ -63,6 +64,11 @@ import type {
 
 const MAX_SANITIZED_LENGTH = 200;
 const SANITIZE_RE = /[^a-zA-Z0-9]/g;
+
+type ComposableAgentDefinition = AgentDefinition & {
+  appendPrompt?: string;
+  contextFiles?: Record<string, string>;
+};
 
 type QueryControllerOptions = {
   transport: Transport;
@@ -151,7 +157,8 @@ export class QueryController implements Query {
         ...(systemPrompt ? { systemPrompt } : {}),
         ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
         ...(excludeDynamicSections != null ? { excludeDynamicSections } : {}),
-        ...(this.#options.agents ? { agents: this.#options.agents } : {}),
+        ...(this.#options.agents ? { agents: composeAgents(this.#options.agents) } : {}),
+        ...(this.#options.toolAliases ? { toolAliases: this.#options.toolAliases } : {}),
         ...(this.#options.title ? { title: this.#options.title } : {}),
         ...(this.#options.planModeInstructions !== undefined
           ? { planModeInstructions: this.#options.planModeInstructions }
@@ -375,6 +382,15 @@ export class QueryController implements Query {
       subtype: "stop_task",
       task_id: taskId,
     });
+  }
+
+  async backgroundTasks(toolUseId?: string): Promise<boolean> {
+    await this.#ready();
+    const response = await this.#sendControlRequest<{ backgrounded?: boolean }>({
+      subtype: "background_tasks",
+      ...(toolUseId !== undefined ? { tool_use_id: toolUseId } : {}),
+    });
+    return response.backgrounded ?? true;
   }
 
   async seedReadState(path: string, mtime: number): Promise<void> {
@@ -1102,6 +1118,45 @@ export async function startup(
       close();
     },
   };
+}
+
+/**
+ * Folds SDK-only fields (`appendPrompt`, `contextFiles`) into each agent's
+ * `prompt` so the wire payload stays the shape the CLI already understands.
+ *
+ * Composition order: original `prompt`, then `appendPrompt`, then each entry
+ * of `contextFiles` rendered as an `<context-file path="…">…</context-file>`
+ * block. XML-style tags avoid markdown fence collisions when context bodies
+ * contain arbitrary code.
+ */
+function composeAgents(agents: Record<string, AgentDefinition>): Record<string, AgentDefinition> {
+  const composed: Record<string, AgentDefinition> = {};
+  for (const [name, agent] of Object.entries(agents) as Array<
+    [string, ComposableAgentDefinition]
+  >) {
+    const { appendPrompt, contextFiles, ...rest } = agent;
+    if (appendPrompt == null && contextFiles == null) {
+      composed[name] = rest;
+      continue;
+    }
+    const sections: string[] = [rest.prompt];
+    if (appendPrompt != null) {
+      sections.push(appendPrompt);
+    }
+    if (contextFiles != null) {
+      for (const [path, content] of Object.entries(contextFiles)) {
+        sections.push(
+          `<context-file path="${escapeAttribute(path)}">\n${content}\n</context-file>`,
+        );
+      }
+    }
+    composed[name] = { ...rest, prompt: sections.join("\n\n") };
+  }
+  return composed;
+}
+
+function escapeAttribute(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
 function normalizeOptionsForCanUseTool(baseOptions: Options): Options {

@@ -11,6 +11,7 @@
 export { AbortError } from "./errors.ts";
 export { EXIT_REASONS, HOOK_EVENTS, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./public-constants.ts";
 export { query, startup } from "./query.ts";
+export { filterEscalatingDefaultMode, resolveSettings } from "./settings.ts";
 export { createSdkMcpServer, tool } from "./sdk-tools.ts";
 export {
   listSessions,
@@ -25,9 +26,6 @@ export {
   foldSessionSummary,
   importSessionToStore,
   InMemorySessionStore,
-  unstable_v2_createSession,
-  unstable_v2_prompt,
-  unstable_v2_resumeSession,
 } from "./sessions.ts";
 export type {
   AccountInfo,
@@ -108,6 +106,7 @@ export type {
   PermissionRuleValue,
   PermissionUpdate,
   PermissionUpdateDestination,
+  PolicySettingsOrigin,
   PostCompactHookInput,
   PostToolBatchHookInput,
   PostToolBatchHookSpecificOutput,
@@ -119,11 +118,12 @@ export type {
   PreCompactHookInput,
   PreToolUseHookInput,
   PreToolUseHookSpecificOutput,
-  PromptRequest,
-  PromptRequestOption,
-  PromptResponse,
+  ProvenanceEntry,
   Query,
   RewindFilesResult,
+  ResolveSettingsOptions,
+  ResolvedSettingSource,
+  ResolvedSettings,
   SDKAPIRetryMessage,
   SDKAssistantMessage,
   SDKAssistantMessageError,
@@ -149,6 +149,7 @@ export type {
   SDKNotificationMessage,
   SDKPartialAssistantMessage,
   SDKPermissionDenial,
+  SDKPermissionDeniedMessage,
   SDKPromptSuggestionMessage,
   SDKPluginInstallMessage,
   SDKRateLimitEvent,
@@ -156,9 +157,7 @@ export type {
   SDKResultError,
   SDKResultMessage,
   SDKResultSuccess,
-  SDKSession,
   SDKSessionInfo,
-  SDKSessionOptions,
   SDKSessionStateChangedMessage,
   SDKSettingsParseError,
   SDKStatus,
@@ -185,6 +184,7 @@ export type {
   SessionMutationOptions,
   SessionStore,
   SessionStoreEntry,
+  SessionStoreFlush,
   SessionSummaryEntry,
   SessionStartHookInput,
   SessionStartHookSpecificOutput,

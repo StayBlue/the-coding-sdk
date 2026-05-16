@@ -102,6 +102,7 @@ const zInitializeControlRequest = z.object({
   appendSystemPrompt: z.string().optional(),
   excludeDynamicSections: z.boolean().optional(),
   agents: z.record(z.string(), z.unknown()).optional(),
+  toolAliases: z.record(z.string(), z.string()).optional(),
   title: z.string().optional(),
   planModeInstructions: z.string().optional(),
   skills: z.array(z.string()).optional(),
@@ -181,6 +182,7 @@ const zControlRequestInnerSchema = z.discriminatedUnion("subtype", [
   z.object({ subtype: z.literal("set_permission_mode"), mode: zPermissionMode }),
   z.object({ subtype: z.literal("seed_read_state"), path: z.string(), mtime: z.number() }),
   z.object({ subtype: z.literal("stop_task"), task_id: z.string() }),
+  z.object({ subtype: z.literal("background_tasks"), tool_use_id: z.string().optional() }),
   zHookCallbackRequest,
   z.object({ subtype: z.literal("get_context_usage") }),
   z.object({

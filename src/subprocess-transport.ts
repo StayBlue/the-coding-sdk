@@ -24,6 +24,7 @@ import { parseStdoutMessage } from "./schemas.ts";
 import type { Options, SpawnedProcess, StdoutMessage, Transport } from "./types.ts";
 
 const DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024;
+const CLAUDE_AGENT_SDK_VERSION = "0.3.143";
 const CLI_NOT_FOUND_MESSAGE =
   "Claude Code not found. Install with:\n" +
   "  npm install -g @anthropic-ai/claude-code\n" +
@@ -119,6 +120,7 @@ export class SubprocessCLITransport implements Transport {
     const { command, args } = this.#buildSpawnCommand(cliPath);
     const env = this.#options.env ? { ...this.#options.env } : { ...process.env };
     env.CLAUDE_CODE_ENTRYPOINT ??= "sdk-ts";
+    env.CLAUDE_AGENT_SDK_VERSION ??= CLAUDE_AGENT_SDK_VERSION;
 
     try {
       this.#process =

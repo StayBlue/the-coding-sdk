@@ -79,6 +79,7 @@ export type FastModeState = "off" | "cooldown" | "on";
 /** Error categories that can be attached to assistant or retry messages. */
 export type SDKAssistantMessageError =
   | "authentication_failed"
+  | "oauth_org_not_allowed"
   | "billing_error"
   | "rate_limit"
   | "invalid_request"
@@ -272,8 +273,15 @@ export type AccountInfo = {
   organization?: string;
   subscriptionType?: string;
   tokenSource?: string;
-  apiKeySource?: string;
-  apiProvider?: "firstParty" | "bedrock" | "vertex" | "foundry" | "anthropicAws";
+  apiKeySource?: ApiKeySource;
+  apiProvider?:
+    | "firstParty"
+    | "bedrock"
+    | "vertex"
+    | "foundry"
+    | "anthropicAws"
+    | "mantle"
+    | "gateway";
 };
 
 /** Definition for a custom agent supplied through SDK options. */
@@ -363,6 +371,9 @@ export type BaseHookInput = {
   permission_mode?: PermissionMode;
   agent_id?: string;
   agent_type?: string;
+  effort?: {
+    level: string;
+  };
 };
 
 /** Hook payload for configuration file changes. */
@@ -625,6 +636,7 @@ export type UserPromptSubmitHookSpecificOutput = {
   hookEventName: "UserPromptSubmit";
   additionalContext?: string;
   sessionTitle?: string;
+  suppressOriginalPrompt?: boolean;
 };
 
 /** Hook-specific output shape for `UserPromptExpansion`. */
@@ -772,6 +784,7 @@ export type SyncHookJSONOutput = {
   stopReason?: string;
   decision?: "approve" | "block";
   systemMessage?: string;
+  terminalSequence?: string;
   reason?: string;
   hookSpecificOutput?:
     | PreToolUseHookSpecificOutput
@@ -1081,6 +1094,13 @@ export type SessionStore = {
   listSubkeys?(key: { projectKey: string; sessionId: string }): Promise<string[]>;
 };
 
+/**
+ * Controls whether mirrored transcript entries are flushed in batches or after each frame.
+ *
+ * @alpha
+ */
+export type SessionStoreFlush = "batched" | "eager";
+
 /** Common runtime options for queries, sessions, and transport startup. */
 export type Options = {
   abortController?: AbortController;
@@ -1092,6 +1112,7 @@ export type Options = {
   continue?: boolean;
   cwd?: string;
   disallowedTools?: string[];
+  toolAliases?: Record<string, string>;
   tools?: string[] | { type: "preset"; preset: "claude_code" };
   env?: Record<string, string | undefined>;
   executable?: "bun" | "deno" | "node";
@@ -1106,6 +1127,7 @@ export type Options = {
   onElicitation?: OnElicitation;
   persistSession?: boolean;
   sessionStore?: SessionStore;
+  sessionStoreFlush?: SessionStoreFlush;
   loadTimeoutMs?: number;
   includeHookEvents?: boolean;
   includePartialMessages?: boolean;
@@ -1158,6 +1180,66 @@ export type Options = {
 /** Parsed Claude Code settings payload. */
 export type Settings = Record<string, unknown>;
 
+/**
+ * Which managed-policy sub-source supplied a setting.
+ *
+ * @alpha
+ */
+export type PolicySettingsOrigin =
+  | "helper"
+  | "remote"
+  | "plist"
+  | "hklm"
+  | "file"
+  | "parent"
+  | "hkcu";
+
+/**
+ * Source that contributed an effective setting value.
+ *
+ * @alpha
+ */
+export type ResolvedSettingSource = SettingSource | "managed" | "flag";
+
+/**
+ * Per-key provenance entry returned by `resolveSettings()`.
+ *
+ * @alpha
+ */
+export type ProvenanceEntry = {
+  source: ResolvedSettingSource;
+  path?: string;
+  policyOrigin?: PolicySettingsOrigin;
+};
+
+/**
+ * Result of resolving the Claude Code settings cascade without spawning the CLI.
+ *
+ * @alpha
+ */
+export type ResolvedSettings = {
+  effective: Settings;
+  provenance: Partial<Record<keyof Settings, ProvenanceEntry>>;
+  sources: Array<{
+    source: ResolvedSettingSource;
+    settings: Settings;
+    path?: string;
+    policyOrigin?: PolicySettingsOrigin;
+  }>;
+};
+
+/**
+ * Options for `resolveSettings()`.
+ *
+ * @alpha
+ */
+export type ResolveSettingsOptions = {
+  cwd?: string;
+  settingSources?: SettingSource[];
+  managedSettings?: Settings;
+  serverManagedSettings?: Settings;
+};
+
 /** Settings file parse or validation error reported by the runtime. */
 export type SDKSettingsParseError = {
   file?: string;
@@ -1188,6 +1270,8 @@ export type SDKUserMessage = SDKBaseMessage & {
   origin?: SDKMessageOrigin;
   shouldQuery?: boolean;
   timestamp?: string;
+  subagent_type?: string;
+  task_description?: string;
 };
 
 /** Assistant message emitted by Claude Code during a query or session. */
@@ -1196,6 +1280,9 @@ export type SDKAssistantMessage = SDKBaseMessage & {
   message: Record<string, unknown>;
   parent_tool_use_id?: string | null;
   error?: SDKAssistantMessageError;
+  request_id?: string;
+  subagent_type?: string;
+  task_description?: string;
 };
 
 /** Terminal result message emitted when a query finishes. */
@@ -1288,6 +1375,8 @@ export type SDKUserMessageReplay = SDKBaseMessage & {
   session_id: string;
   isReplay: true;
   file_attachments?: unknown[];
+  subagent_type?: string;
+  task_description?: string;
 };
 
 /** Authentication status update emitted while login is in progress. */
@@ -1306,6 +1395,7 @@ export type SDKResultSuccess = {
   subtype: "success";
   duration_ms: number;
   duration_api_ms: number;
+  ttft_ms?: number;
   is_error: boolean;
   api_error_status?: number | null;
   num_turns: number;
@@ -1319,6 +1409,7 @@ export type SDKResultSuccess = {
   deferred_tool_use?: SDKDeferredToolUse;
   terminal_reason?: TerminalReason;
   fast_mode_state?: FastModeState;
+  origin?: SDKMessageOrigin;
   uuid: UUID;
   session_id: string;
 };
@@ -1343,6 +1434,7 @@ export type SDKResultError = {
   errors: string[];
   terminal_reason?: TerminalReason;
   fast_mode_state?: FastModeState;
+  origin?: SDKMessageOrigin;
   uuid: UUID;
   session_id: string;
 };
@@ -1496,6 +1588,7 @@ export type SDKTaskProgressMessage = {
   task_id: string;
   tool_use_id?: string;
   description: string;
+  subagent_type?: string;
   usage: {
     total_tokens: number;
     tool_uses: number;
@@ -1514,6 +1607,7 @@ export type SDKTaskStartedMessage = {
   task_id: string;
   tool_use_id?: string;
   description: string;
+  subagent_type?: string;
   task_type?: string;
   workflow_name?: string;
   prompt?: string;
@@ -1591,6 +1685,20 @@ export type SDKMirrorErrorMessage = {
   session_id: string;
 };
 
+/** Message emitted when a tool call is denied before an interactive permission prompt. */
+export type SDKPermissionDeniedMessage = {
+  type: "system";
+  subtype: "permission_denied";
+  tool_name: string;
+  tool_use_id: string;
+  agent_id?: string;
+  decision_reason_type?: string;
+  decision_reason?: string;
+  message: string;
+  uuid: UUID;
+  session_id: string;
+};
+
 /** Union of streamed messages emitted by queries and sessions. */
 export type SDKMessage =
   | SDKUserMessage
@@ -1621,7 +1729,8 @@ export type SDKMessage =
   | SDKMirrorErrorMessage
   | SDKAuthStatusMessage
   | SDKFilesPersistedEvent
-  | SDKElicitationCompleteMessage;
+  | SDKElicitationCompleteMessage
+  | SDKPermissionDeniedMessage;
 
 /** Response payload returned by the runtime initialize control request. */
 export type SDKControlInitializeResponse = {
@@ -1935,6 +2044,7 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   reloadPlugins(): Promise<SDKControlReloadPluginsResponse>;
   streamInput(stream: AsyncIterable<SDKUserMessage>): Promise<void>;
   stopTask(taskId: string): Promise<void>;
+  backgroundTasks(toolUseId?: string): Promise<boolean>;
   seedReadState(path: string, mtime: number): Promise<void>;
   close(): void;
 }
@@ -1958,6 +2068,7 @@ export type SDKControlRequestInner =
       appendSystemPrompt?: string;
       excludeDynamicSections?: boolean;
       agents?: Record<string, AgentDefinition>;
+      toolAliases?: Record<string, string>;
       title?: string;
       planModeInstructions?: string;
       skills?: string[];
@@ -2027,6 +2138,10 @@ export type SDKControlRequestInner =
   | {
       subtype: "stop_task";
       task_id: string;
+    }
+  | {
+      subtype: "background_tasks";
+      tool_use_id?: string;
     }
   | {
       subtype: "hook_callback";

@@ -14,7 +14,13 @@ import { QueryController, createUserPromptMessage, query, startup } from "./quer
 import { createSdkMcpServer, tool } from "./sdk-tools.ts";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
-import type { HookInput, SpawnedProcess, StdoutMessage, Transport } from "./types.ts";
+import type {
+  AgentDefinition,
+  HookInput,
+  SpawnedProcess,
+  StdoutMessage,
+  Transport,
+} from "./types.ts";
 import { z } from "zod";
 
 function createPromptFailureProcess(): {
@@ -488,6 +494,154 @@ test("query controller forwards latest initialize options", async () => {
     forwardSubagentText: true,
     promptSuggestions: true,
     agentProgressSummaries: true,
+  });
+});
+
+test("query controller folds appendPrompt and contextFiles into the agent prompt", async () => {
+  const transport = new MockTransport();
+  let initializeRequest:
+    | { agents?: Record<string, { prompt?: string } & Record<string, unknown>> }
+    | undefined;
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: Record<string, unknown> & { subtype?: string };
+    };
+
+    if (message.type === "control_request" && message.request?.subtype === "initialize") {
+      initializeRequest = message.request as typeof initializeRequest;
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      });
+    }
+  };
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      agents: {
+        plain: {
+          description: "no extras",
+          prompt: "Plain body.",
+        },
+        composed: {
+          description: "with extras",
+          prompt: "Base body.",
+          appendPrompt: "Extra rules.",
+          contextFiles: {
+            "AGENTS.md": "# Project rules\nUse bun.",
+            "policy.md": "Be concise.",
+            'a&b<c".md': "edge.",
+          },
+        },
+      } as Record<
+        string,
+        AgentDefinition & { appendPrompt?: string; contextFiles?: Record<string, string> }
+      >,
+    },
+  });
+
+  const startPromise = controller.start();
+  await controller.initialize();
+  transport.finish();
+  await startPromise;
+
+  const plain = initializeRequest?.agents?.plain as { prompt: string } & Record<string, unknown>;
+  expect(plain.prompt).toBe("Plain body.");
+  expect("appendPrompt" in plain).toBe(false);
+  expect("contextFiles" in plain).toBe(false);
+
+  const composed = initializeRequest?.agents?.composed as { prompt: string } & Record<
+    string,
+    unknown
+  >;
+  expect(composed.prompt).toBe(
+    [
+      "Base body.",
+      "Extra rules.",
+      '<context-file path="AGENTS.md">\n# Project rules\nUse bun.\n</context-file>',
+      '<context-file path="policy.md">\nBe concise.\n</context-file>',
+      '<context-file path="a&amp;b&lt;c&quot;.md">\nedge.\n</context-file>',
+    ].join("\n\n"),
+  );
+  expect("appendPrompt" in composed).toBe(false);
+  expect("contextFiles" in composed).toBe(false);
+});
+
+test("query controller backgrounds tasks through control requests", async () => {
+  const transport = new MockTransport();
+  let backgroundRequest: Record<string, unknown> | undefined;
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: Record<string, unknown> & { subtype?: string };
+    };
+
+    if (message.type === "control_request" && message.request?.subtype === "initialize") {
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      });
+      return;
+    }
+
+    if (message.type === "control_request" && message.request?.subtype === "background_tasks") {
+      backgroundRequest = message.request;
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            backgrounded: false,
+          },
+        },
+      });
+    }
+  };
+
+  const controller = new QueryController({
+    transport,
+    options: {},
+  });
+
+  const startPromise = controller.start();
+  await controller.initialize();
+  const backgrounded = await controller.backgroundTasks("tool-1");
+  transport.finish();
+  await startPromise;
+
+  expect(backgrounded).toBe(false);
+  expect(backgroundRequest).toEqual({
+    subtype: "background_tasks",
+    tool_use_id: "tool-1",
   });
 });
 
