@@ -14,6 +14,7 @@
  * @module
  */
 export { createSdkMcpServer, tool } from "./src/sdk-tools.ts";
+export type * from "./src/sdk-tool-schemas.ts";
 export type {
   McpSdkServerConfig,
   McpSdkServerConfigWithInstance,

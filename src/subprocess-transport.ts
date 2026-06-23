@@ -24,7 +24,7 @@ import { parseStdoutMessage } from "./schemas.ts";
 import type { Options, SpawnedProcess, StdoutMessage, Transport } from "./types.ts";
 
 const DEFAULT_MAX_BUFFER_SIZE = 1024 * 1024;
-const CLAUDE_AGENT_SDK_VERSION = "0.3.143";
+const CLAUDE_AGENT_SDK_VERSION = "0.3.186";
 const CLI_NOT_FOUND_MESSAGE =
   "Claude Code not found. Install with:\n" +
   "  npm install -g @anthropic-ai/claude-code\n" +
@@ -121,6 +121,13 @@ export class SubprocessCLITransport implements Transport {
     const env = this.#options.env ? { ...this.#options.env } : { ...process.env };
     env.CLAUDE_CODE_ENTRYPOINT ??= "sdk-ts";
     env.CLAUDE_AGENT_SDK_VERSION ??= CLAUDE_AGENT_SDK_VERSION;
+    if (this.#options.enableFileCheckpointing) {
+      env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING = "true";
+    }
+    if (this.#options.toolConfig?.askUserQuestion?.previewFormat) {
+      env.CLAUDE_CODE_QUESTION_PREVIEW_FORMAT =
+        this.#options.toolConfig.askUserQuestion.previewFormat;
+    }
 
     try {
       this.#process =
@@ -203,6 +210,10 @@ export class SubprocessCLITransport implements Transport {
         }
       }, 1000).unref?.();
     }
+  }
+
+  async waitForExit(): Promise<void> {
+    await waitForExit(this.#process);
   }
 
   async *readMessages(): AsyncGenerator<StdoutMessage, void, unknown> {
@@ -417,8 +428,14 @@ export class SubprocessCLITransport implements Transport {
     if (this.#options.model) {
       cliArgs.push("--model", this.#options.model);
     }
+    if (this.#options.agent) {
+      cliArgs.push("--agent", this.#options.agent);
+    }
     if (this.#options.fallbackModel) {
       cliArgs.push("--fallback-model", this.#options.fallbackModel);
+    }
+    if (this.#options.outputFormat?.type === "json_schema") {
+      cliArgs.push("--json-schema", JSON.stringify(this.#options.outputFormat.schema));
     }
     if (this.#options.betas?.length) {
       cliArgs.push("--betas", this.#options.betas.join(","));
@@ -426,9 +443,7 @@ export class SubprocessCLITransport implements Transport {
     if (this.#options.permissionPromptToolName) {
       cliArgs.push("--permission-prompt-tool", this.#options.permissionPromptToolName);
     }
-    if (this.#options.permissionMode) {
-      cliArgs.push("--permission-mode", this.#options.permissionMode);
-    }
+    cliArgs.push("--permission-mode", this.#options.permissionMode ?? "default");
     if (this.#options.continue) {
       cliArgs.push("--continue");
     }
@@ -443,9 +458,6 @@ export class SubprocessCLITransport implements Transport {
     }
     if (this.#options.forkSession) {
       cliArgs.push("--fork-session");
-    }
-    if (this.#options.enableFileCheckpointing) {
-      cliArgs.push("--enable-file-checkpointing");
     }
     if (this.#options.debug) {
       cliArgs.push("--debug");
@@ -489,7 +501,10 @@ export class SubprocessCLITransport implements Transport {
     if (this.#options.plugins?.length) {
       for (const plugin of this.#options.plugins) {
         if (plugin.type === "local") {
-          cliArgs.push("--plugin-dir", plugin.path);
+          cliArgs.push(
+            plugin.skipMcpDiscovery ? "--plugin-dir-no-mcp" : "--plugin-dir",
+            plugin.path,
+          );
         }
       }
     }
@@ -563,9 +578,22 @@ export class SubprocessCLITransport implements Transport {
       }
     }
 
-    settingsObject.sandbox = this.#options.sandbox;
+    settingsObject.sandbox = normalizeSandboxSettings(this.#options.sandbox);
     return JSON.stringify(settingsObject);
   }
+}
+
+function normalizeSandboxSettings(sandbox: Options["sandbox"]): Options["sandbox"] {
+  if (!sandbox) {
+    return sandbox;
+  }
+  if (sandbox.enabled === true && sandbox.failIfUnavailable === undefined) {
+    return {
+      ...sandbox,
+      failIfUnavailable: true,
+    };
+  }
+  return sandbox;
 }
 
 function stripSdkInstances(servers: NonNullable<Options["mcpServers"]>) {

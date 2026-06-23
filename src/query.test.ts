@@ -324,6 +324,149 @@ test("query controller fulfills can_use_tool requests", async () => {
   });
 });
 
+test("query controller fulfills request_user_dialog control requests", async () => {
+  const transport = new MockTransport();
+  const seen: Record<string, unknown> = {};
+
+  transport.enqueue({
+    type: "control_request",
+    request_id: "dialog-1",
+    request: {
+      subtype: "request_user_dialog",
+      dialog_kind: "refusal_fallback_prompt",
+      payload: {
+        model: "fallback",
+      },
+      tool_use_id: "tool-1",
+    },
+  });
+  transport.finish();
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      onUserDialog: async (request, options) => {
+        seen.request = request;
+        seen.aborted = options.signal.aborted;
+        return {
+          behavior: "completed",
+          result: {
+            accepted: true,
+          },
+        };
+      },
+    },
+  });
+
+  await controller.start();
+
+  expect(seen).toEqual({
+    request: {
+      dialogKind: "refusal_fallback_prompt",
+      payload: {
+        model: "fallback",
+      },
+      toolUseID: "tool-1",
+    },
+    aborted: false,
+  });
+
+  expect(JSON.parse(transport.writes[0] as string)).toEqual({
+    type: "control_response",
+    response: {
+      subtype: "success",
+      request_id: "dialog-1",
+      response: {
+        behavior: "completed",
+        result: {
+          accepted: true,
+        },
+      },
+    },
+  });
+});
+
+test("query controller suppresses request_user_dialog responses when no handler is configured", async () => {
+  const transport = new MockTransport();
+
+  transport.enqueue({
+    type: "control_request",
+    request_id: "dialog-1",
+    request: {
+      subtype: "request_user_dialog",
+      dialog_kind: "unknown",
+      payload: {},
+    },
+  });
+  transport.finish();
+
+  const controller = new QueryController({
+    transport,
+    options: {},
+  });
+
+  await controller.start();
+
+  expect(transport.writes).toEqual([]);
+});
+
+test("query controller ignores duplicate in-flight control request deliveries", async () => {
+  const transport = new MockTransport();
+  let dialogCalls = 0;
+  let resolveDialog: (() => void) | undefined;
+  const dialogRelease = new Promise<void>((resolve) => {
+    resolveDialog = resolve;
+  });
+
+  const request: StdoutMessage = {
+    type: "control_request",
+    request_id: "dialog-1",
+    request: {
+      subtype: "request_user_dialog",
+      dialog_kind: "refusal_fallback_prompt",
+      payload: {},
+    },
+  };
+
+  transport.enqueue(request);
+  transport.enqueue(request);
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      onUserDialog: async () => {
+        dialogCalls += 1;
+        await dialogRelease;
+        return { behavior: "cancelled" };
+      },
+    },
+  });
+
+  const startPromise = controller.start();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  resolveDialog?.();
+  transport.finish();
+  await startPromise;
+
+  const responses = transport.writes
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((message) => message.type === "control_response");
+
+  expect(dialogCalls).toBe(1);
+  expect(responses).toEqual([
+    {
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: "dialog-1",
+        response: {
+          behavior: "cancelled",
+        },
+      },
+    },
+  ]);
+});
+
 test("query controller fulfills hook callbacks after initialize", async () => {
   const transport = new MockTransport();
   let callbackId = "";
@@ -430,6 +573,182 @@ test("query controller fulfills hook callbacks after initialize", async () => {
   });
 });
 
+test("query controller processes pending dialog requests from initialize responses", async () => {
+  const transport = new MockTransport();
+  let dialogResponse: Record<string, unknown> | undefined;
+  let resolveDialogResponse: (() => void) | undefined;
+
+  const dialogResponsePromise = new Promise<void>((resolve) => {
+    resolveDialogResponse = resolve;
+  });
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: {
+        subtype?: string;
+      };
+      response?: {
+        request_id?: string;
+      };
+    };
+
+    if (message.type === "control_request" && message.request?.subtype === "initialize") {
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+          pending_user_dialog_requests: [
+            {
+              type: "control_request",
+              request_id: "pending-dialog-1",
+              request: {
+                subtype: "request_user_dialog",
+                dialog_kind: "refusal_fallback_prompt",
+                payload: {
+                  model: "fallback",
+                },
+              },
+            },
+          ],
+        },
+      });
+      return;
+    }
+
+    if (
+      message.type === "control_response" &&
+      message.response?.request_id === "pending-dialog-1"
+    ) {
+      dialogResponse = message;
+      resolveDialogResponse?.();
+    }
+  };
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      onUserDialog: async () => ({
+        behavior: "cancelled",
+      }),
+    },
+  });
+
+  const startPromise = controller.start();
+  await controller.initialize();
+  await dialogResponsePromise;
+  transport.finish();
+  await startPromise;
+
+  expect(dialogResponse).toEqual({
+    type: "control_response",
+    response: {
+      subtype: "success",
+      request_id: "pending-dialog-1",
+      response: {
+        behavior: "cancelled",
+      },
+    },
+  });
+});
+
+test("query controller ignores pending dialog redelivery on non-initialize responses", async () => {
+  const transport = new MockTransport();
+  let dialogCalls = 0;
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: {
+        subtype?: string;
+      };
+    };
+
+    if (message.type !== "control_request") {
+      return;
+    }
+
+    if (message.request?.subtype === "initialize") {
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      });
+      return;
+    }
+
+    if (message.request?.subtype === "reload_skills") {
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            skills: [],
+          },
+          pending_user_dialog_requests: [
+            {
+              type: "control_request",
+              request_id: "pending-dialog-1",
+              request: {
+                subtype: "request_user_dialog",
+                dialog_kind: "refusal_fallback_prompt",
+                payload: {},
+              },
+            },
+          ],
+        },
+      });
+    }
+  };
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      onUserDialog: async () => {
+        dialogCalls += 1;
+        return {
+          behavior: "cancelled",
+        };
+      },
+    },
+  });
+
+  const startPromise = controller.start();
+  await controller.initialize();
+  await controller.reloadSkills();
+  transport.finish();
+  await startPromise;
+
+  expect(dialogCalls).toBe(0);
+  expect(
+    transport.writes
+      .map((line) => JSON.parse(line) as { response?: { request_id?: string } })
+      .some((message) => message.response?.request_id === "pending-dialog-1"),
+  ).toBe(false);
+});
+
 test("query controller forwards latest initialize options", async () => {
   const transport = new MockTransport();
   let initializeRequest:
@@ -440,6 +759,7 @@ test("query controller forwards latest initialize options", async () => {
         forwardSubagentText?: boolean;
         promptSuggestions?: boolean;
         agentProgressSummaries?: boolean;
+        supportedDialogKinds?: string[];
       }
     | undefined;
 
@@ -479,6 +799,8 @@ test("query controller forwards latest initialize options", async () => {
       forwardSubagentText: true,
       promptSuggestions: true,
       agentProgressSummaries: true,
+      supportedDialogKinds: ["refusal_fallback_prompt"],
+      onUserDialog: async () => ({ behavior: "cancelled" }),
     },
   });
 
@@ -494,7 +816,35 @@ test("query controller forwards latest initialize options", async () => {
     forwardSubagentText: true,
     promptSuggestions: true,
     agentProgressSummaries: true,
+    supportedDialogKinds: ["refusal_fallback_prompt"],
   });
+});
+
+test("query controller rejects supported dialog kinds without a dialog handler", () => {
+  expect(() =>
+    query({
+      prompt: "hello",
+      options: {
+        supportedDialogKinds: ["refusal_fallback_prompt"],
+        pathToClaudeCodeExecutable: "/fake/claude",
+        spawnClaudeCodeProcess: () => createWarmQueryProcess().process,
+      },
+    }),
+  ).toThrow("supportedDialogKinds requires an onUserDialog callback");
+});
+
+test("query controller rejects fallback model equal to primary model", () => {
+  expect(() =>
+    query({
+      prompt: "hello",
+      options: {
+        model: "claude-sonnet-4-6",
+        fallbackModel: "claude-sonnet-4-6",
+        pathToClaudeCodeExecutable: "/fake/claude",
+        spawnClaudeCodeProcess: () => createWarmQueryProcess().process,
+      },
+    }),
+  ).toThrow("Fallback model cannot be the same as the main model");
 });
 
 test("query controller folds appendPrompt and contextFiles into the agent prompt", async () => {
@@ -645,6 +995,69 @@ test("query controller backgrounds tasks through control requests", async () => 
   });
 });
 
+test("query controller keeps stdin open while background tasks are running", async () => {
+  const transport = new MockTransport();
+  const controller = new QueryController({
+    transport,
+    options: {
+      canUseTool: async () => ({ behavior: "allow" }),
+    },
+  });
+
+  const startPromise = controller.start();
+  const input = (async function* () {
+    yield createUserPromptMessage("run a background task");
+  })();
+
+  const streamPromise = controller.streamInput(input);
+  await Promise.resolve();
+
+  transport.enqueue({
+    type: "system",
+    subtype: "task_started",
+    task_id: "task-1",
+    description: "Background work",
+    uuid: "task-started-1",
+    session_id: "session-1",
+  });
+  transport.enqueue({
+    type: "result",
+    subtype: "success",
+    duration_ms: 1,
+    duration_api_ms: 1,
+    is_error: false,
+    num_turns: 1,
+    result: "done",
+    stop_reason: null,
+    total_cost_usd: 0,
+    usage: {} as never,
+    modelUsage: {},
+    permission_denials: [],
+    uuid: "result-1",
+    session_id: "session-1",
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(transport.endInputCalls).toBe(0);
+
+  transport.enqueue({
+    type: "system",
+    subtype: "task_notification",
+    task_id: "task-1",
+    status: "completed",
+    output_file: "/tmp/task.txt",
+    summary: "Finished",
+    uuid: "task-done-1",
+    session_id: "session-1",
+  });
+
+  await streamPromise;
+  expect(transport.endInputCalls).toBe(1);
+
+  transport.finish();
+  await startPromise;
+});
+
 test("query controller readFile returns file contents and null on control errors", async () => {
   const transport = new MockTransport();
   const readRequests: Array<Record<string, unknown>> = [];
@@ -736,6 +1149,108 @@ test("query controller readFile returns file contents and null on control errors
       path: "missing.txt",
     },
   ]);
+});
+
+test("query controller forwards usage, reload skills, and thinking display controls", async () => {
+  const transport = new MockTransport();
+  const controlRequests: Array<Record<string, unknown>> = [];
+
+  transport.onWrite = async (data) => {
+    const message = JSON.parse(data) as {
+      type?: string;
+      request_id?: string;
+      request?: Record<string, unknown> & { subtype?: string };
+    };
+
+    if (message.type !== "control_request") {
+      return;
+    }
+
+    if (message.request?.subtype === "initialize") {
+      transport.enqueue({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: message.request_id ?? "",
+          response: {
+            commands: [],
+            agents: [],
+            output_style: "default",
+            available_output_styles: [],
+            models: [],
+            account: {},
+          },
+        },
+      });
+      return;
+    }
+
+    controlRequests.push(message.request ?? {});
+
+    const response =
+      message.request?.subtype === "get_usage"
+        ? {
+            session: {
+              total_cost_usd: 0,
+              total_api_duration_ms: 0,
+              total_duration_ms: 0,
+              total_lines_added: 0,
+              total_lines_removed: 0,
+              model_usage: {},
+            },
+            subscription_type: null,
+            rate_limits_available: false,
+            rate_limits: null,
+            behaviors: null,
+          }
+        : message.request?.subtype === "reload_skills"
+          ? {
+              skills: [
+                {
+                  name: "docx",
+                  description: "Read documents",
+                  argumentHint: "",
+                },
+              ],
+            }
+          : {};
+
+    transport.enqueue({
+      type: "control_response",
+      response: {
+        subtype: "success",
+        request_id: message.request_id ?? "",
+        response,
+      },
+    });
+  };
+
+  const controller = new QueryController({ transport, options: {} });
+  const startPromise = controller.start();
+  await controller.initialize();
+
+  await controller.setMaxThinkingTokens(2048, "omitted");
+  const usage = await controller.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
+  const skills = await controller.reloadSkills();
+
+  transport.finish();
+  await startPromise;
+
+  expect(controlRequests).toEqual([
+    {
+      subtype: "set_max_thinking_tokens",
+      max_thinking_tokens: 2048,
+      thinking_display: "omitted",
+    },
+    {
+      subtype: "get_usage",
+    },
+    {
+      subtype: "reload_skills",
+    },
+  ]);
+  expect(usage.rate_limits_available).toBe(false);
+  expect(skills.skills[0]?.name).toBe("docx");
 });
 
 test("query controller delegates SDK MCP control requests and rejects unsupported inbound requests", async () => {
@@ -1267,14 +1782,21 @@ test("query controller yields known stream messages and skips unknown message ty
   expect(seen).toEqual(["stream_event", "rate_limit_event"]);
 });
 
-test("query controller mirrors transcript batches into a session store", async () => {
+test("query controller batches transcript mirror frames by default", async () => {
   const transport = new MockTransport();
   const root = "/tmp/claude-store-root";
-  const entries = [
+  const firstEntries = [
     {
       type: "user",
       uuid: "entry-1",
       message: { role: "user", content: "hello" },
+    },
+  ];
+  const secondEntries = [
+    {
+      type: "assistant",
+      uuid: "entry-2",
+      message: { role: "assistant", content: "hi" },
     },
   ];
   const appended: Array<{ key: Record<string, string>; entries: unknown[] }> = [];
@@ -1282,7 +1804,12 @@ test("query controller mirrors transcript batches into a session store", async (
   transport.enqueue({
     type: "transcript_mirror",
     filePath: `${root}/projects/-tmp-project/session-1.jsonl`,
-    entries,
+    entries: firstEntries,
+  });
+  transport.enqueue({
+    type: "transcript_mirror",
+    filePath: `${root}/projects/-tmp-project/session-1.jsonl`,
+    entries: secondEntries,
   });
   transport.finish();
 
@@ -1309,9 +1836,59 @@ test("query controller mirrors transcript batches into a session store", async (
         projectKey: "-tmp-project",
         sessionId: "session-1",
       },
+      entries: [...firstEntries, ...secondEntries],
+    },
+  ]);
+});
+
+test("query controller supports eager transcript mirror flushing", async () => {
+  const transport = new MockTransport();
+  const root = "/tmp/claude-store-root";
+  const entries = [{ type: "user", uuid: "entry-1" }];
+  const appended: Array<{ key: Record<string, string>; entries: unknown[] }> = [];
+  let resolveAppend: (() => void) | undefined;
+  const appendPromise = new Promise<void>((resolve) => {
+    resolveAppend = resolve;
+  });
+
+  transport.enqueue({
+    type: "transcript_mirror",
+    filePath: `${root}/projects/-tmp-project/session-1.jsonl`,
+    entries,
+  });
+
+  const controller = new QueryController({
+    transport,
+    options: {
+      env: { CLAUDE_CONFIG_DIR: root },
+      sessionStoreFlush: "eager",
+      sessionStore: {
+        async append(key, batch) {
+          appended.push({ key, entries: batch });
+          resolveAppend?.();
+        },
+        async load() {
+          return null;
+        },
+      },
+    },
+  });
+
+  const startPromise = controller.start();
+  await appendPromise;
+
+  expect(appended).toEqual([
+    {
+      key: {
+        projectKey: "-tmp-project",
+        sessionId: "session-1",
+      },
       entries,
     },
   ]);
+
+  transport.finish();
+  await startPromise;
 });
 
 test("query controller yields mirror_error messages when session store append fails", async () => {

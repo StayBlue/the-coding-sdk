@@ -44,9 +44,11 @@ import type {
   RewindFilesOptions,
   RewindFilesResult,
   SDKControlGetContextUsageResponse,
+  SDKControlGetUsageResponse,
   SDKControlInitializeResponse,
   SDKControlReadFileResponse,
   SDKControlReloadPluginsResponse,
+  SDKControlReloadSkillsResponse,
   SDKControlRequest,
   SDKControlRequestInner,
   SDKControlResponse,
@@ -64,6 +66,9 @@ import type {
 
 const MAX_SANITIZED_LENGTH = 200;
 const SANITIZE_RE = /[^a-zA-Z0-9]/g;
+const TRANSCRIPT_MIRROR_MAX_PENDING_ENTRIES = 500;
+const TRANSCRIPT_MIRROR_MAX_PENDING_BYTES = 1024 * 1024;
+const SUPPRESS_CONTROL_RESPONSE = Symbol("suppressControlResponse");
 
 type ComposableAgentDefinition = AgentDefinition & {
   appendPrompt?: string;
@@ -86,6 +91,8 @@ export class QueryController implements Query {
   #closed = false;
   #firstResultSeen = false;
   #firstResultWaiters: Array<() => void> = [];
+  #activeBackgroundTasks = new Set<string>();
+  #backgroundTaskWaiters: Array<() => void> = [];
   #requestCounter = 0;
   #pendingControls = new Map<
     string,
@@ -93,6 +100,7 @@ export class QueryController implements Query {
       resolve: (value: Record<string, unknown>) => void;
       reject: (error: unknown) => void;
       timer: Timer | number;
+      subtype: SDKControlRequestInner["subtype"];
     }
   >();
   #controlHandlers = new Map<string, HookCallback>();
@@ -101,6 +109,12 @@ export class QueryController implements Query {
   #sdkMcpServers = new Map<string, NonNullable<Options["mcpServers"]>[string] & { type: "sdk" }>();
   #sdkMcpBridges = new Map<string, McpBridgeTransport>();
   #pendingMcpResponses = new Map<string, { resolve: (msg: JSONRPCMessage) => void }>();
+  #pendingTranscriptMirrors = new Map<
+    string,
+    { key: SessionKey; entries: SessionStoreEntry[]; bytes: number }
+  >();
+  #pendingTranscriptMirrorEntries = 0;
+  #pendingTranscriptMirrorBytes = 0;
   #cleanupCallbacks: Array<() => void> = [];
   #cleanupRun = false;
 
@@ -173,6 +187,9 @@ export class QueryController implements Query {
         ...(this.#options.forwardSubagentText != null
           ? { forwardSubagentText: this.#options.forwardSubagentText }
           : {}),
+        ...(this.#options.supportedDialogKinds != null
+          ? { supportedDialogKinds: this.#options.supportedDialogKinds }
+          : {}),
       },
       60_000,
     );
@@ -199,11 +216,15 @@ export class QueryController implements Query {
     });
   }
 
-  async setMaxThinkingTokens(maxThinkingTokens: number | null): Promise<void> {
+  async setMaxThinkingTokens(
+    maxThinkingTokens: number | null,
+    thinkingDisplay?: "summarized" | "omitted" | null,
+  ): Promise<void> {
     await this.#ready();
     await this.#sendControlRequest({
       subtype: "set_max_thinking_tokens",
       max_thinking_tokens: maxThinkingTokens,
+      ...(thinkingDisplay !== undefined ? { thinking_display: thinkingDisplay } : {}),
     });
   }
 
@@ -241,6 +262,13 @@ export class QueryController implements Query {
     await this.#ready();
     return this.#sendControlRequest<SDKControlGetContextUsageResponse>({
       subtype: "get_context_usage",
+    });
+  }
+
+  async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<SDKControlGetUsageResponse> {
+    await this.#ready();
+    return this.#sendControlRequest<SDKControlGetUsageResponse>({
+      subtype: "get_usage",
     });
   }
 
@@ -324,6 +352,13 @@ export class QueryController implements Query {
     });
   }
 
+  async reloadSkills(): Promise<SDKControlReloadSkillsResponse> {
+    await this.#ready();
+    return this.#sendControlRequest<SDKControlReloadSkillsResponse>({
+      subtype: "reload_skills",
+    });
+  }
+
   async accountInfo(): Promise<AccountInfo> {
     return (await this.initializationResult()).account ?? {};
   }
@@ -403,6 +438,8 @@ export class QueryController implements Query {
       return;
     }
     this.#closed = true;
+    this.#notifyBackgroundTaskWaiters(true);
+    void this.#flushTranscriptMirrors();
     for (const abortController of this.#inflightControlRequests.values()) {
       abortController.abort();
     }
@@ -440,6 +477,7 @@ export class QueryController implements Query {
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
+    await this.#flushTranscriptMirrors();
     this.close();
   }
 
@@ -486,15 +524,19 @@ export class QueryController implements Query {
         }
 
         const sdkMessage = message;
+        this.#trackBackgroundTaskMessage(sdkMessage);
         if (sdkMessage.type === "result") {
+          await this.#flushTranscriptMirrors();
           this.#markFirstResult();
         }
         this.#queue.push(sdkMessage);
       }
+      await this.#flushTranscriptMirrors();
       this.#markFirstResult();
       this.#queue.close();
       this.#runCleanupCallbacks();
     } catch (error) {
+      await this.#flushTranscriptMirrors();
       this.#markFirstResult();
       this.#queue.fail(error);
       this.#runCleanupCallbacks();
@@ -508,11 +550,13 @@ export class QueryController implements Query {
   }
 
   async return(): Promise<IteratorResult<SDKMessage>> {
+    await this.#flushTranscriptMirrors();
     this.close();
     return this.#queue.return();
   }
 
   async throw(error?: unknown): Promise<IteratorResult<SDKMessage>> {
+    await this.#flushTranscriptMirrors();
     this.close(error);
     return this.#queue.throw(error);
   }
@@ -594,6 +638,7 @@ export class QueryController implements Query {
         resolve,
         reject,
         timer,
+        subtype: request.subtype,
       });
     });
 
@@ -612,14 +657,46 @@ export class QueryController implements Query {
 
     if (message.response.subtype === "error") {
       pending.reject(new CLIConnectionError(message.response.error ?? "Unknown control error"));
+    } else {
+      pending.resolve(message.response.response ?? {});
+    }
+
+    if (pending.subtype !== "initialize") {
       return;
     }
 
-    pending.resolve(message.response.response ?? {});
+    this.#processPendingControlRequests(
+      message.response.pending_permission_requests,
+      "can_use_tool",
+    );
+    this.#processPendingControlRequests(
+      message.response.pending_user_dialog_requests,
+      "request_user_dialog",
+    );
+  }
+
+  #processPendingControlRequests(
+    requests: SDKControlRequest[] | undefined,
+    subtype: SDKControlRequestInner["subtype"],
+  ): void {
+    for (const request of requests ?? []) {
+      if (request.request.subtype !== subtype) {
+        continue;
+      }
+      this.#handleControlRequest({
+        type: "control_request",
+        request_id: request.request_id,
+        request: request.request as Record<string, unknown>,
+      });
+    }
   }
 
   #handleControlRequest(message: Extract<StdoutMessage, { type: "control_request" }>): void {
     const requestId = message.request_id;
+    if (this.#inflightControlRequests.has(requestId)) {
+      return;
+    }
+
     const request = parseSDKControlRequestInner(message.request);
     if (!request) {
       throw new CLIConnectionError("Malformed control request payload");
@@ -630,6 +707,9 @@ export class QueryController implements Query {
     void (async () => {
       try {
         const response = await this.#fulfillControlRequest(request, abortController.signal);
+        if (response === SUPPRESS_CONTROL_RESPONSE) {
+          return;
+        }
         const controlResponse: SDKControlResponse = {
           type: "control_response",
           response: {
@@ -662,7 +742,7 @@ export class QueryController implements Query {
   async #fulfillControlRequest(
     request: SDKControlRequestInner,
     signal: AbortSignal,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<Record<string, unknown> | typeof SUPPRESS_CONTROL_RESPONSE> {
     switch (request.subtype) {
       case "can_use_tool": {
         if (!this.#options.canUseTool) {
@@ -780,21 +860,50 @@ export class QueryController implements Query {
 
         return { action: "decline" };
       }
+      case "request_user_dialog": {
+        if (this.#options.onUserDialog) {
+          return (await this.#options.onUserDialog(
+            {
+              dialogKind: request.dialog_kind,
+              payload: request.payload,
+              ...(request.tool_use_id ? { toolUseID: request.tool_use_id } : {}),
+            },
+            { signal },
+          )) as unknown as Record<string, unknown>;
+        }
+
+        return SUPPRESS_CONTROL_RESPONSE;
+      }
       default:
         throw new CLIConnectionError(`Unsupported control request subtype: ${request.subtype}`);
     }
   }
 
   async #waitForResultAndEndInput(): Promise<void> {
-    if (this.#sdkMcpServers.size > 0 || this.#controlHandlers.size > 0) {
+    if (this.#shouldKeepControlChannelOpen()) {
       if (!this.#firstResultSeen) {
         await new Promise<void>((resolve) => {
           this.#firstResultWaiters.push(resolve);
         });
       }
+      while (this.#activeBackgroundTasks.size > 0 && !this.#closed) {
+        await new Promise<void>((resolve) => {
+          this.#backgroundTaskWaiters.push(resolve);
+        });
+      }
     }
 
     this.#transport.endInput();
+  }
+
+  #shouldKeepControlChannelOpen(): boolean {
+    return (
+      this.#sdkMcpServers.size > 0 ||
+      this.#controlHandlers.size > 0 ||
+      this.#options.canUseTool != null ||
+      this.#options.onElicitation != null ||
+      this.#options.onUserDialog != null
+    );
   }
 
   #markFirstResult(): void {
@@ -809,11 +918,46 @@ export class QueryController implements Query {
     }
   }
 
+  #trackBackgroundTaskMessage(message: SDKMessage): void {
+    if (message.type !== "system") {
+      return;
+    }
+
+    if (message.subtype === "task_started") {
+      this.#activeBackgroundTasks.add(message.task_id);
+      return;
+    }
+
+    if (message.subtype === "task_notification") {
+      this.#activeBackgroundTasks.delete(message.task_id);
+      this.#notifyBackgroundTaskWaiters();
+      return;
+    }
+
+    if (message.subtype === "task_updated") {
+      const status = message.patch.status;
+      if (status === "completed" || status === "failed" || status === "killed") {
+        this.#activeBackgroundTasks.delete(message.task_id);
+        this.#notifyBackgroundTaskWaiters();
+      }
+    }
+  }
+
+  #notifyBackgroundTaskWaiters(force = false): void {
+    if (!force && this.#activeBackgroundTasks.size > 0) {
+      return;
+    }
+    const waiters = [...this.#backgroundTaskWaiters];
+    this.#backgroundTaskWaiters = [];
+    for (const waiter of waiters) {
+      waiter();
+    }
+  }
+
   async #handleTranscriptMirror(
     message: Extract<StdoutMessage, { type: "transcript_mirror" }>,
   ): Promise<void> {
-    const store = this.#options.sessionStore;
-    if (!store) {
+    if (!this.#options.sessionStore) {
       return;
     }
 
@@ -822,9 +966,58 @@ export class QueryController implements Query {
       return;
     }
 
+    const mirrorKey = transcriptMirrorKey(key);
+    const bytes = JSON.stringify(message.entries).length;
+    const existing = this.#pendingTranscriptMirrors.get(mirrorKey);
+    if (existing) {
+      existing.entries.push(...message.entries);
+      existing.bytes += bytes;
+    } else {
+      this.#pendingTranscriptMirrors.set(mirrorKey, {
+        key,
+        entries: [...message.entries],
+        bytes,
+      });
+    }
+    this.#pendingTranscriptMirrorEntries += message.entries.length;
+    this.#pendingTranscriptMirrorBytes += bytes;
+
+    const maxEntries =
+      this.#options.sessionStoreFlush === "eager" ? 0 : TRANSCRIPT_MIRROR_MAX_PENDING_ENTRIES;
+    const maxBytes =
+      this.#options.sessionStoreFlush === "eager" ? 0 : TRANSCRIPT_MIRROR_MAX_PENDING_BYTES;
+    if (
+      this.#pendingTranscriptMirrorEntries > maxEntries ||
+      this.#pendingTranscriptMirrorBytes > maxBytes
+    ) {
+      await this.#flushTranscriptMirrors();
+    }
+  }
+
+  async #flushTranscriptMirrors(): Promise<void> {
+    if (this.#pendingTranscriptMirrors.size === 0) {
+      return;
+    }
+
+    const batches = [...this.#pendingTranscriptMirrors.values()];
+    this.#pendingTranscriptMirrors.clear();
+    this.#pendingTranscriptMirrorEntries = 0;
+    this.#pendingTranscriptMirrorBytes = 0;
+
+    for (const batch of batches) {
+      await this.#appendTranscriptMirrorBatch(batch.key, batch.entries);
+    }
+  }
+
+  async #appendTranscriptMirrorBatch(key: SessionKey, entries: SessionStoreEntry[]): Promise<void> {
+    const store = this.#options.sessionStore;
+    if (!store) {
+      return;
+    }
+
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        await store.append(key, message.entries);
+        await store.append(key, entries);
         return;
       } catch (error) {
         if (attempt < 2) {
@@ -1160,6 +1353,18 @@ function escapeAttribute(value: string): string {
 }
 
 function normalizeOptionsForCanUseTool(baseOptions: Options): Options {
+  if (baseOptions.supportedDialogKinds?.length && baseOptions.onUserDialog == null) {
+    throw new Error(
+      "supportedDialogKinds requires an onUserDialog callback. Provide onUserDialog, or omit supportedDialogKinds.",
+    );
+  }
+  if (
+    baseOptions.model &&
+    baseOptions.fallbackModel &&
+    baseOptions.model === baseOptions.fallbackModel
+  ) {
+    throw new Error("Fallback model cannot be the same as the main model.");
+  }
   if (baseOptions.canUseTool == null) {
     return { ...baseOptions };
   }
@@ -1369,6 +1574,10 @@ function sessionKeyFromTranscriptPath(filePath: string, options: Options): Sessi
   }
 
   return undefined;
+}
+
+function transcriptMirrorKey(key: SessionKey): string {
+  return `${key.projectKey}\0${key.sessionId}\0${key.subpath ?? ""}`;
 }
 
 function projectKeyForCwd(cwd?: string): string {

@@ -34,7 +34,7 @@ const LOCAL_DECL_FILES = (process.env.API_SURFACE_LOCAL_DECLS ?? "dist/src/index
 const REFERENCE_DECL_PATH = process.env.API_SURFACE_REFERENCE_DECL?.trim() || null;
 const REFERENCE_LABEL = process.env.API_SURFACE_REFERENCE_LABEL?.trim() || "reference";
 const REFERENCE_PACKAGE = process.env.API_SURFACE_PACKAGE ?? "@anthropic-ai/claude-agent-sdk";
-const REFERENCE_VERSION = process.env.API_SURFACE_VERSION ?? "0.3.143";
+const REFERENCE_VERSION = process.env.API_SURFACE_VERSION ?? "0.3.186";
 const REFERENCE_DECL_FILES = (
   process.env.API_SURFACE_REFERENCE_DECLS ?? "sdk.d.ts,dist/sdk.d.ts,agentSdkTypes.d.ts"
 )
@@ -181,6 +181,37 @@ function resolveReExportSources(sourceText, sourceFilePath) {
   for (const statement of sourceFile.statements) {
     if (
       ts.isExportDeclaration(statement) &&
+      statement.moduleSpecifier &&
+      ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      const specifier = statement.moduleSpecifier.text;
+      if (specifier.startsWith(".")) {
+        const resolved = joinPath(dir, specifier);
+        sources.add(resolved);
+        sources.add(resolved.replace(/\.ts$/, ".d.ts"));
+        if (!resolved.endsWith(".ts")) sources.add(resolved + ".d.ts");
+      }
+    }
+  }
+
+  return [...sources];
+}
+
+function resolveStarReExportSources(sourceText, sourceFilePath) {
+  const sourceFile = ts.createSourceFile(
+    "surface.d.ts",
+    sourceText,
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const dir = sourceFilePath.replace(/\/[^/]+$/, "");
+  const sources = new Set();
+
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isExportDeclaration(statement) &&
+      !statement.exportClause &&
       statement.moduleSpecifier &&
       ts.isStringLiteral(statement.moduleSpecifier)
     ) {
@@ -379,11 +410,25 @@ async function readDeclText(filePath) {
 
 async function collectFromDeclarationFiles(filePaths) {
   const allNames = new Set();
-  for (const filePath of filePaths) {
+  const visited = new Set();
+
+  const processFile = async (filePath) => {
+    if (visited.has(filePath)) return;
+    visited.add(filePath);
+    if (!(await Bun.file(filePath).exists())) return;
+
     const text = await readDeclText(filePath);
     for (const name of collectExportedNames(text)) {
       allNames.add(name);
     }
+
+    for (const source of resolveStarReExportSources(text, filePath)) {
+      await processFile(source);
+    }
+  };
+
+  for (const filePath of filePaths) {
+    await processFile(filePath);
   }
   return [...allNames].sort();
 }

@@ -109,6 +109,7 @@ const zInitializeControlRequest = z.object({
   promptSuggestions: z.boolean().optional(),
   agentProgressSummaries: z.boolean().optional(),
   forwardSubagentText: z.boolean().optional(),
+  supportedDialogKinds: z.array(z.string()).optional(),
 });
 
 const zCanUseToolRequest = z.object({
@@ -118,6 +119,22 @@ const zCanUseToolRequest = z.object({
   permission_suggestions: z.array(z.unknown()).optional(),
   blocked_path: z.string().optional(),
   decision_reason: z.string().optional(),
+  decision_reason_type: z
+    .union([
+      z.literal("rule"),
+      z.literal("mode"),
+      z.literal("subcommandResults"),
+      z.literal("permissionPromptTool"),
+      z.literal("hook"),
+      z.literal("asyncAgent"),
+      z.literal("sandboxOverride"),
+      z.literal("workingDir"),
+      z.literal("safetyCheck"),
+      z.literal("classifier"),
+      z.literal("other"),
+    ])
+    .optional(),
+  classifier_approvable: z.boolean().optional(),
   title: z.string().optional(),
   display_name: z.string().optional(),
   description: z.string().optional(),
@@ -151,6 +168,13 @@ const zElicitationRequest = z.object({
   description: z.string().optional(),
 });
 
+const zUserDialogRequest = z.object({
+  subtype: z.literal("request_user_dialog"),
+  dialog_kind: z.string(),
+  payload: zRecordUnknown,
+  tool_use_id: z.string().optional(),
+});
+
 const zPermissionMode = z.union([
   z.literal("default"),
   z.literal("acceptEdits"),
@@ -177,6 +201,7 @@ const zControlRequestInnerSchema = z.discriminatedUnion("subtype", [
   z.object({
     subtype: z.literal("set_max_thinking_tokens"),
     max_thinking_tokens: z.number().nullable(),
+    thinking_display: z.union([z.literal("summarized"), z.literal("omitted"), z.null()]).optional(),
   }),
   z.object({ subtype: z.literal("apply_flag_settings"), settings: zRecordUnknown }),
   z.object({ subtype: z.literal("set_permission_mode"), mode: zPermissionMode }),
@@ -185,6 +210,7 @@ const zControlRequestInnerSchema = z.discriminatedUnion("subtype", [
   z.object({ subtype: z.literal("background_tasks"), tool_use_id: z.string().optional() }),
   zHookCallbackRequest,
   z.object({ subtype: z.literal("get_context_usage") }),
+  z.object({ subtype: z.literal("get_usage") }),
   z.object({
     subtype: z.literal("read_file"),
     path: z.string(),
@@ -192,11 +218,18 @@ const zControlRequestInnerSchema = z.discriminatedUnion("subtype", [
     encoding: z.union([z.literal("utf-8"), z.literal("base64")]).optional(),
   }),
   zElicitationRequest,
+  zUserDialogRequest,
   z.object({
     subtype: z.literal("mcp_set_servers"),
     servers: z.record(z.string(), z.unknown()),
   }),
   z.object({ subtype: z.literal("reload_plugins") }),
+  z.object({ subtype: z.literal("reload_skills") }),
+  z.object({
+    subtype: z.literal("rewind_conversation"),
+    user_message_id: z.string(),
+    durable_resume_anchor: z.boolean().optional(),
+  }),
 ]);
 
 export function parseSDKControlRequestInner(raw: unknown): SDKControlRequestInner | undefined {

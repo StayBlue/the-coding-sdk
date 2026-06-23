@@ -24,6 +24,8 @@ import {
   zToolsCallParamsSchema,
 } from "./schemas.ts";
 
+export type * from "./sdk-tool-schemas.ts";
+
 /** Defines an SDK-native MCP tool from a Zod schema and async handler. */
 export function tool<Schema extends AnyZodRawShape>(
   name: string,

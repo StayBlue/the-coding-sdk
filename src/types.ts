@@ -82,7 +82,9 @@ export type SDKAssistantMessageError =
   | "oauth_org_not_allowed"
   | "billing_error"
   | "rate_limit"
+  | "overloaded"
   | "invalid_request"
+  | "model_not_found"
   | "server_error"
   | "unknown"
   | "max_output_tokens";
@@ -103,6 +105,7 @@ export type TerminalReason =
   | "hook_stopped"
   | "tool_deferred"
   | "max_turns"
+  | "background_requested"
   | "completed";
 
 /** Token and cost usage for a single model during a run. */
@@ -143,9 +146,14 @@ export type SDKRateLimitInfo = {
     | "org_service_level_disabled"
     | "org_service_zero_credit_limit"
     | "no_limits_configured"
+    | "fetch_error"
     | "unknown";
   isUsingOverage?: boolean;
+  overageInUse?: boolean;
   surpassedThreshold?: number;
+  errorCode?: "credits_required";
+  canUserPurchaseCredits?: boolean;
+  hasChargeableSavedPaymentMethod?: boolean;
 };
 
 /** A tool invocation that was denied by the permission system. */
@@ -189,6 +197,29 @@ export type OnElicitation = (
   options: { signal: AbortSignal },
 ) => Promise<ElicitationResult>;
 
+/** Request payload sent when the runtime asks the host to render a blocking dialog. */
+export type UserDialogRequest = {
+  dialogKind: string;
+  payload: Record<string, unknown>;
+  toolUseID?: string;
+};
+
+/** Response returned by a host-rendered blocking dialog. */
+export type UserDialogResult =
+  | {
+      behavior: "completed";
+      result: unknown;
+    }
+  | {
+      behavior: "cancelled";
+    };
+
+/** Callback invoked when the runtime emits a blocking user-dialog request. */
+export type OnUserDialog = (
+  request: UserDialogRequest,
+  options: { signal: AbortSignal },
+) => Promise<UserDialogResult>;
+
 /** Result of replacing the active MCP server configuration set. */
 export type McpSetServersResult = {
   added: string[];
@@ -227,6 +258,11 @@ export type SDKControlReloadPluginsResponse = {
   }>;
   mcpServers: McpServerStatus[];
   error_count: number;
+};
+
+/** Refreshed skill commands returned after reloading skills from disk. */
+export type SDKControlReloadSkillsResponse = {
+  skills: SlashCommand[];
 };
 
 /** Convenience alias for arbitrary Zod object shapes used by SDK tools. */
@@ -418,6 +454,16 @@ export type FileChangedHookInput = BaseHookInput & {
   event: "change" | "add" | "unlink";
 };
 
+/** Hook payload for display-only assistant message text transforms. */
+export type MessageDisplayHookInput = BaseHookInput & {
+  hook_event_name: "MessageDisplay";
+  turn_id: string;
+  message_id: string;
+  index: number;
+  final: boolean;
+  delta: string;
+};
+
 /** Hook payload emitted immediately before a tool call runs. */
 export type PreToolUseHookInput = BaseHookInput & {
   hook_event_name: "PreToolUse";
@@ -527,6 +573,8 @@ export type StopHookInput = BaseHookInput & {
   hook_event_name: "Stop";
   stop_hook_active: boolean;
   last_assistant_message?: string;
+  background_tasks?: BackgroundTaskSummary[];
+  session_crons?: SessionCronSummary[];
 };
 
 /** Hook payload for a failure while processing a stop request. */
@@ -552,6 +600,8 @@ export type SubagentStopHookInput = BaseHookInput & {
   agent_transcript_path: string;
   agent_type: string;
   last_assistant_message?: string;
+  background_tasks?: BackgroundTaskSummary[];
+  session_crons?: SessionCronSummary[];
 };
 
 /** Hook payload emitted immediately before compaction starts. */
@@ -650,7 +700,9 @@ export type SessionStartHookSpecificOutput = {
   hookEventName: "SessionStart";
   additionalContext?: string;
   initialUserMessage?: string;
+  sessionTitle?: string;
   watchPaths?: string[];
+  reloadSkills?: boolean;
 };
 
 /** Hook-specific output shape for `Setup`. */
@@ -662,6 +714,18 @@ export type SetupHookSpecificOutput = {
 /** Hook-specific output shape for `SubagentStart`. */
 export type SubagentStartHookSpecificOutput = {
   hookEventName: "SubagentStart";
+  additionalContext?: string;
+};
+
+/** Hook-specific output shape for `Stop`. */
+export type StopHookSpecificOutput = {
+  hookEventName: "Stop";
+  additionalContext?: string;
+};
+
+/** Hook-specific output shape for `SubagentStop`. */
+export type SubagentStopHookSpecificOutput = {
+  hookEventName: "SubagentStop";
   additionalContext?: string;
 };
 
@@ -745,6 +809,12 @@ export type WorktreeCreateHookSpecificOutput = {
   worktreePath: string;
 };
 
+/** Hook-specific output shape for `MessageDisplay`. */
+export type MessageDisplayHookSpecificOutput = {
+  hookEventName: "MessageDisplay";
+  displayContent?: string;
+};
+
 /** Union of all hook callback input payloads. */
 export type HookInput =
   | PreToolUseHookInput
@@ -757,6 +827,7 @@ export type HookInput =
   | ElicitationHookInput
   | ElicitationResultHookInput
   | FileChangedHookInput
+  | MessageDisplayHookInput
   | UserPromptSubmitHookInput
   | UserPromptExpansionHookInput
   | SessionStartHookInput
@@ -793,6 +864,8 @@ export type SyncHookJSONOutput = {
     | SessionStartHookSpecificOutput
     | SetupHookSpecificOutput
     | SubagentStartHookSpecificOutput
+    | StopHookSpecificOutput
+    | SubagentStopHookSpecificOutput
     | PostToolUseHookSpecificOutput
     | PostToolBatchHookSpecificOutput
     | PostToolUseFailureHookSpecificOutput
@@ -803,7 +876,8 @@ export type SyncHookJSONOutput = {
     | ElicitationResultHookSpecificOutput
     | CwdChangedHookSpecificOutput
     | FileChangedHookSpecificOutput
-    | WorktreeCreateHookSpecificOutput;
+    | WorktreeCreateHookSpecificOutput
+    | MessageDisplayHookSpecificOutput;
 };
 
 /** Asynchronous hook callback response payload. */
@@ -853,6 +927,7 @@ export type CanUseTool = (
 export type SdkPluginConfig = {
   type: "local";
   path: string;
+  skipMcpDiscovery?: boolean;
 };
 
 /** Structured output request that supplies a JSON schema. */
@@ -933,12 +1008,14 @@ export type McpClaudeAIProxyServerConfig = {
   type: "claudeai-proxy";
   url: string;
   id: string;
+  timeout?: number;
 };
 
 /** Per-tool permission policy for remote MCP servers. */
 export type McpServerToolPolicy = {
   name: string;
-  permission_policy: "always_allow" | "always_ask" | "always_deny";
+  permission_policy?: "always_allow" | "always_ask" | "always_deny";
+  org_max_permission?: "allow" | "ask" | "blocked";
 };
 
 /** MCP server configuration for HTTP transport. */
@@ -947,6 +1024,7 @@ export type McpHttpServerConfig = {
   url: string;
   headers?: Record<string, string>;
   tools?: McpServerToolPolicy[];
+  timeout?: number;
   alwaysLoad?: boolean;
 };
 
@@ -956,6 +1034,7 @@ export type McpSSEServerConfig = {
   url: string;
   headers?: Record<string, string>;
   tools?: McpServerToolPolicy[];
+  timeout?: number;
   alwaysLoad?: boolean;
 };
 
@@ -965,6 +1044,7 @@ export type McpStdioServerConfig = {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  timeout?: number;
   alwaysLoad?: boolean;
 };
 
@@ -1062,6 +1142,27 @@ export type TaskBudget = {
   total: number;
 };
 
+/** Summary of in-flight background work exposed to stop hooks. */
+export type BackgroundTaskSummary = {
+  id: string;
+  type: string;
+  status: string;
+  description: string;
+  command?: string;
+  agent_type?: string;
+  server?: string;
+  tool?: string;
+  name?: string;
+};
+
+/** Summary of a scheduled session cron or wakeup exposed to stop hooks. */
+export type SessionCronSummary = {
+  id: string;
+  schedule: string;
+  recurring: boolean;
+  prompt: string;
+};
+
 /** Identifies a main session transcript or subagent transcript in a session store. */
 export type SessionKey = {
   projectKey: string;
@@ -1125,6 +1226,8 @@ export type Options = {
   betas?: SdkBeta[];
   hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>>;
   onElicitation?: OnElicitation;
+  onUserDialog?: OnUserDialog;
+  supportedDialogKinds?: string[];
   persistSession?: boolean;
   sessionStore?: SessionStore;
   sessionStoreFlush?: SessionStoreFlush;
@@ -1281,6 +1384,7 @@ export type SDKAssistantMessage = SDKBaseMessage & {
   parent_tool_use_id?: string | null;
   error?: SDKAssistantMessageError;
   request_id?: string;
+  supersedes?: UUID[];
   subagent_type?: string;
   task_description?: string;
 };
@@ -1352,6 +1456,53 @@ export type SDKPromptSuggestionMessage = SDKBaseMessage & {
   suggestion: string;
 };
 
+/** System message emitted when the runtime's slash-command list changes. */
+export type SDKCommandsChangedMessage = SDKBaseMessage & {
+  type: "system";
+  subtype: "commands_changed";
+  commands: SlashCommand[];
+};
+
+/** Generic plaintext status, feedback, or command-output banner. */
+export type SDKInformationalMessage = SDKBaseMessage & {
+  type: "system";
+  subtype: "informational";
+  content: string;
+  level: "info" | "notice" | "suggestion" | "warning";
+  tool_use_id?: string;
+  prevent_continuation?: boolean;
+};
+
+/** Notice emitted when a refused response is retried on a fallback model. */
+export type SDKModelRefusalFallbackMessage = SDKBaseMessage & {
+  type: "system";
+  subtype: "model_refusal_fallback";
+  trigger: "refusal";
+  direction: "retry" | "revert" | "sticky";
+  original_model: string;
+  fallback_model: string;
+  request_id: string | null;
+  api_refusal_category?: string | null;
+  api_refusal_explanation?: string | null;
+  retracted_message_uuids?: string[];
+  content: string;
+};
+
+/** Live approximate thinking-token estimate emitted during redacted thinking. */
+export type SDKThinkingTokensMessage = SDKBaseMessage & {
+  type: "system";
+  subtype: "thinking_tokens";
+  estimated_tokens: number;
+  estimated_tokens_delta: number;
+};
+
+/** Notice emitted by remote-control workers during graceful shutdown. */
+export type SDKWorkerShuttingDownMessage = SDKBaseMessage & {
+  type: "system";
+  subtype: "worker_shutting_down";
+  reason: string;
+};
+
 /** Provenance for user-role messages received from non-keyboard sources. */
 export type SDKMessageOrigin =
   | { kind: "human" }
@@ -1396,6 +1547,11 @@ export type SDKResultSuccess = {
   duration_ms: number;
   duration_api_ms: number;
   ttft_ms?: number;
+  ttft_stream_ms?: number;
+  time_to_request_ms?: number;
+  time_to_request_from_spawn_ms?: number;
+  warm_spare_claimed?: boolean;
+  time_origin_ms?: number;
   is_error: boolean;
   api_error_status?: number | null;
   num_turns: number;
@@ -1706,10 +1862,12 @@ export type SDKMessage =
   | SDKAssistantMessage
   | SDKResultMessage
   | SDKSystemMessage
+  | SDKCommandsChangedMessage
   | SDKPartialAssistantMessage
   | SDKCompactBoundaryMessage
   | SDKStatusMessage
   | SDKAPIRetryMessage
+  | SDKModelRefusalFallbackMessage
   | SDKLocalCommandOutputMessage
   | SDKHookStartedMessage
   | SDKHookProgressMessage
@@ -1723,14 +1881,17 @@ export type SDKMessage =
   | SDKTaskStartedMessage
   | SDKTaskUpdatedMessage
   | SDKTaskProgressMessage
+  | SDKThinkingTokensMessage
   | SDKSessionStateChangedMessage
+  | SDKWorkerShuttingDownMessage
   | SDKNotificationMessage
   | SDKMemoryRecallMessage
   | SDKMirrorErrorMessage
   | SDKAuthStatusMessage
   | SDKFilesPersistedEvent
   | SDKElicitationCompleteMessage
-  | SDKPermissionDeniedMessage;
+  | SDKPermissionDeniedMessage
+  | SDKInformationalMessage;
 
 /** Response payload returned by the runtime initialize control request. */
 export type SDKControlInitializeResponse = {
@@ -1834,6 +1995,65 @@ export type SDKControlGetContextUsageResponse = {
     cache_creation_input_tokens: number;
     cache_read_input_tokens: number;
   } | null;
+};
+
+/** Experimental structured data behind the `/usage` command. */
+export type SDKControlGetUsageResponse = {
+  session: {
+    total_cost_usd: number;
+    total_api_duration_ms: number;
+    total_duration_ms: number;
+    total_lines_added: number;
+    total_lines_removed: number;
+    model_usage: Record<string, ModelUsage>;
+  };
+  subscription_type: string | null;
+  rate_limits_available: boolean;
+  rate_limits: {
+    five_hour?: UsageRateLimitWindow | null;
+    seven_day?: UsageRateLimitWindow | null;
+    seven_day_oauth_apps?: UsageRateLimitWindow | null;
+    seven_day_opus?: UsageRateLimitWindow | null;
+    seven_day_sonnet?: UsageRateLimitWindow | null;
+    extra_usage?: {
+      is_enabled: boolean;
+      monthly_limit: number | null;
+      used_credits: number | null;
+      utilization: number | null;
+      currency?: string | null;
+    } | null;
+  } | null;
+  behaviors: {
+    day: UsageBehaviorWindow;
+    week: UsageBehaviorWindow;
+  } | null;
+};
+
+/** Utilization data for one plan rate-limit window. */
+export type UsageRateLimitWindow = {
+  utilization: number | null;
+  resets_at: string | null;
+};
+
+/** Local transcript-derived behavior attribution for one usage window. */
+export type UsageBehaviorWindow = {
+  request_count: number;
+  session_count: number;
+  behaviors: Array<{
+    key: "cache_miss" | "long_context" | "subagent_heavy" | "high_parallel" | "cron";
+    pct: number;
+    count: number;
+  }>;
+  agents: UsageAttribution[];
+  skills: UsageAttribution[];
+  plugins: UsageAttribution[];
+  mcp_servers: UsageAttribution[];
+};
+
+/** Percentage attribution for one named usage contributor. */
+export type UsageAttribution = {
+  name: string;
+  pct: number;
 };
 
 /** File contents returned by the remote sidebar read-file helper. */
@@ -1987,6 +2207,8 @@ export type StdoutMessage =
         request_id: string;
         response?: Record<string, unknown>;
         error?: string;
+        pending_permission_requests?: SDKControlRequest[];
+        pending_user_dialog_requests?: SDKControlRequest[];
       };
     }
   | {
@@ -2014,6 +2236,7 @@ export interface Transport {
   isReady(): boolean;
   readMessages(): AsyncGenerator<StdoutMessage, void, unknown>;
   endInput(): void;
+  waitForExit?(): Promise<void>;
 }
 
 /** Streaming query handle with control methods for the active Claude Code run. */
@@ -2024,7 +2247,10 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   /**
    * @deprecated Use the `thinking` option in `query()` instead.
    */
-  setMaxThinkingTokens(maxThinkingTokens: number | null): Promise<void>;
+  setMaxThinkingTokens(
+    maxThinkingTokens: number | null,
+    thinkingDisplay?: "summarized" | "omitted" | null,
+  ): Promise<void>;
   applyFlagSettings(settings: Settings): Promise<void>;
   initializationResult(): Promise<SDKControlInitializeResponse>;
   supportedCommands(): Promise<SlashCommand[]>;
@@ -2032,6 +2258,7 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   supportedAgents(): Promise<AgentInfo[]>;
   mcpServerStatus(): Promise<McpServerStatus[]>;
   getContextUsage(): Promise<SDKControlGetContextUsageResponse>;
+  usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<SDKControlGetUsageResponse>;
   readFile(
     path: string,
     options?: { maxBytes?: number; encoding?: "utf-8" | "base64" },
@@ -2042,6 +2269,7 @@ export interface Query extends AsyncGenerator<SDKMessage, void> {
   toggleMcpServer(serverName: string, enabled: boolean): Promise<void>;
   setMcpServers(servers: Record<string, McpServerConfig>): Promise<McpSetServersResult>;
   reloadPlugins(): Promise<SDKControlReloadPluginsResponse>;
+  reloadSkills(): Promise<SDKControlReloadSkillsResponse>;
   streamInput(stream: AsyncIterable<SDKUserMessage>): Promise<void>;
   stopTask(taskId: string): Promise<void>;
   backgroundTasks(toolUseId?: string): Promise<boolean>;
@@ -2075,6 +2303,7 @@ export type SDKControlRequestInner =
       promptSuggestions?: boolean;
       agentProgressSummaries?: boolean;
       forwardSubagentText?: boolean;
+      supportedDialogKinds?: string[];
     }
   | {
       subtype: "interrupt";
@@ -2103,6 +2332,19 @@ export type SDKControlRequestInner =
       permission_suggestions?: PermissionUpdate[];
       blocked_path?: string;
       decision_reason?: string;
+      decision_reason_type?:
+        | "rule"
+        | "mode"
+        | "subcommandResults"
+        | "permissionPromptTool"
+        | "hook"
+        | "asyncAgent"
+        | "sandboxOverride"
+        | "workingDir"
+        | "safetyCheck"
+        | "classifier"
+        | "other";
+      classifier_approvable?: boolean;
       title?: string;
       display_name?: string;
       description?: string;
@@ -2121,6 +2363,7 @@ export type SDKControlRequestInner =
   | {
       subtype: "set_max_thinking_tokens";
       max_thinking_tokens: number | null;
+      thinking_display?: "summarized" | "omitted" | null;
     }
   | {
       subtype: "apply_flag_settings";
@@ -2153,6 +2396,9 @@ export type SDKControlRequestInner =
       subtype: "get_context_usage";
     }
   | {
+      subtype: "get_usage";
+    }
+  | {
       subtype: "read_file";
       path: string;
       max_bytes?: number;
@@ -2173,6 +2419,20 @@ export type SDKControlRequestInner =
     }
   | {
       subtype: "reload_plugins";
+    }
+  | {
+      subtype: "reload_skills";
+    }
+  | {
+      subtype: "request_user_dialog";
+      dialog_kind: string;
+      payload: Record<string, unknown>;
+      tool_use_id?: string;
+    }
+  | {
+      subtype: "rewind_conversation";
+      user_message_id: string;
+      durable_resume_anchor?: boolean;
     };
 
 /** Envelope for a single control request sent to the runtime. */
@@ -2190,11 +2450,14 @@ export type SDKControlResponse = {
         subtype: "success";
         request_id: string;
         response?: Record<string, unknown>;
+        pending_permission_requests?: SDKControlRequest[];
+        pending_user_dialog_requests?: SDKControlRequest[];
       }
     | {
         subtype: "error";
         request_id: string;
         error: string;
         pending_permission_requests?: SDKControlRequest[];
+        pending_user_dialog_requests?: SDKControlRequest[];
       };
 };

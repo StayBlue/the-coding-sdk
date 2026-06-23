@@ -171,6 +171,18 @@ test("buildSpawnCommand includes model and permission flags", async () => {
   const { process: proc } = createMockProcess();
   const transport = new SubprocessCLITransport({
     model: "claude-sonnet-4-5-20250514",
+    agent: "code-reviewer",
+    outputFormat: {
+      type: "json_schema",
+      schema: {
+        type: "object",
+        properties: {
+          ok: {
+            type: "boolean",
+          },
+        },
+      },
+    },
     permissionMode: "bypassPermissions",
     maxTurns: 5,
     maxBudgetUsd: 10,
@@ -184,6 +196,17 @@ test("buildSpawnCommand includes model and permission flags", async () => {
 
   expect(capturedArgs).toContain("--model");
   expect(capturedArgs).toContain("claude-sonnet-4-5-20250514");
+  expect(capturedArgs).toContain("--agent");
+  expect(capturedArgs).toContain("code-reviewer");
+  expect(capturedArgs).toContain("--json-schema");
+  expect(JSON.parse(capturedArgs[capturedArgs.indexOf("--json-schema") + 1]!)).toEqual({
+    type: "object",
+    properties: {
+      ok: {
+        type: "boolean",
+      },
+    },
+  });
   expect(capturedArgs).toContain("--permission-mode");
   expect(capturedArgs).toContain("bypassPermissions");
   expect(capturedArgs).toContain("--max-turns");
@@ -203,6 +226,12 @@ test("connect uses provided env without inheriting process.env", async () => {
     const transport = new SubprocessCLITransport({
       pathToClaudeCodeExecutable: "/fake/claude",
       env: { CUSTOM_ENV: "from-options" },
+      enableFileCheckpointing: true,
+      toolConfig: {
+        askUserQuestion: {
+          previewFormat: "html",
+        },
+      },
       spawnClaudeCodeProcess: (opts) => {
         capturedEnv = opts.env;
         return proc;
@@ -212,6 +241,9 @@ test("connect uses provided env without inheriting process.env", async () => {
 
     expect(capturedEnv?.CUSTOM_ENV).toBe("from-options");
     expect(capturedEnv?.CLAUDE_CODE_ENTRYPOINT).toBe("sdk-ts");
+    expect(capturedEnv?.CLAUDE_AGENT_SDK_VERSION).toBe("0.3.186");
+    expect(capturedEnv?.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING).toBe("true");
+    expect(capturedEnv?.CLAUDE_CODE_QUESTION_PREVIEW_FORMAT).toBe("html");
     expect(capturedEnv?.CLAUDE_SDK_TEST_INHERIT).toBeUndefined();
   } finally {
     if (originalMarker === undefined) {
@@ -238,6 +270,17 @@ test("buildSpawnCommand derives skill tool permissions and serializes managed se
       },
     },
     settingSources: [],
+    plugins: [
+      {
+        type: "local",
+        path: "/tmp/full-plugin",
+      },
+      {
+        type: "local",
+        path: "/tmp/no-mcp-plugin",
+        skipMcpDiscovery: true,
+      },
+    ],
     spawnClaudeCodeProcess: (opts) => {
       capturedArgs = opts.args;
       return proc;
@@ -250,6 +293,12 @@ test("buildSpawnCommand derives skill tool permissions and serializes managed se
 
   expect(allowedTools).toBe("Read,Skill(docx),Skill(pdf)");
   expect(capturedArgs).toContain("--setting-sources=");
+  expect(capturedArgs).toContain("--permission-mode");
+  expect(capturedArgs).toContain("default");
+  expect(capturedArgs).toContain("--plugin-dir");
+  expect(capturedArgs).toContain("/tmp/full-plugin");
+  expect(capturedArgs).toContain("--plugin-dir-no-mcp");
+  expect(capturedArgs).toContain("/tmp/no-mcp-plugin");
   expect(managedSettings).toBeDefined();
   expect(JSON.parse(managedSettings!)).toEqual({
     sandbox: {
@@ -435,7 +484,10 @@ test("buildSpawnCommand merges sandbox into JSON settings", async () => {
   const settingsValue = capturedArgs[settingsIndex + 1];
   expect(JSON.parse(settingsValue!)).toEqual({
     theme: "dark",
-    sandbox: { enabled: true },
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: true,
+    },
   });
 });
 
